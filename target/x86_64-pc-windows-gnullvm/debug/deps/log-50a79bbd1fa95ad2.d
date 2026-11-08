@@ -1,0 +1,10 @@
+D:\REDLAMP-danh\redlamp_demo\target\x86_64-pc-windows-gnullvm\debug\deps\log-50a79bbd1fa95ad2.d: C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\log-0.4.35\src\lib.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\log-0.4.35\src\macros.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\log-0.4.35\src\serde.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\log-0.4.35\src\__private_api.rs
+
+D:\REDLAMP-danh\redlamp_demo\target\x86_64-pc-windows-gnullvm\debug\deps\liblog-50a79bbd1fa95ad2.rlib: C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\log-0.4.35\src\lib.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\log-0.4.35\src\macros.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\log-0.4.35\src\serde.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\log-0.4.35\src\__private_api.rs
+
+D:\REDLAMP-danh\redlamp_demo\target\x86_64-pc-windows-gnullvm\debug\deps\liblog-50a79bbd1fa95ad2.rmeta: C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\log-0.4.35\src\lib.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\log-0.4.35\src\macros.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\log-0.4.35\src\serde.rs C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\log-0.4.35\src\__private_api.rs
+
+C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\log-0.4.35\src\lib.rs:
+C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\log-0.4.35\src\macros.rs:
+C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\log-0.4.35\src\serde.rs:
+C:\Users\Admin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\log-0.4.35\src\__private_api.rs:

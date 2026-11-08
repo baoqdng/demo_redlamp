@@ -1,0 +1,1 @@
+cargo:rustc-env=MIME_TYPES_GENERATED_PATH=D:\REDLAMP-danh\redlamp_demo\target\debug\build\mime_guess-0361b843900c8f71\out\mime_types_generated.rs

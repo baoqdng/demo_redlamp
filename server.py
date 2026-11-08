@@ -1,0 +1,164 @@
+import os
+import sys
+from typing import Optional, List, Dict, Any
+from fastapi import FastAPI, Query, HTTPException, Body
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+if CURRENT_DIR not in sys.path:
+    sys.path.insert(0, CURRENT_DIR)
+
+from engine import RedLampEngine
+from index import RedLampIndexer
+
+RESULT_DIR = r"D:\REDLAMP-danh\result"
+
+app = FastAPI(title="RedLamp Web Demo", description="Hệ thống demo phát hiện bất thường chuỗi thời gian không giám sát")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+indexer = RedLampIndexer(RESULT_DIR)
+engine = RedLampEngine(RESULT_DIR)
+
+class PredictPointRequest(BaseModel):
+    dataset: str
+    entity: str
+    seed: int = 0
+    point: List[float]
+    context_type: str = "sample_last" # sample_last, custom, median
+    custom_history: Optional[List[List[float]]] = None
+    threshold_override: Optional[float] = None
+
+class ExplainRequest(BaseModel):
+    dataset: str
+    entity: str
+    seed: int = 0
+    t: Optional[int] = None
+    custom_window: Optional[List[List[float]]] = None
+    point: Optional[List[float]] = None
+    is_custom_point: bool = False
+
+@app.get("/api/index")
+def get_index():
+    return indexer.index_cache
+
+@app.get("/api/entity")
+def get_entity(dataset: str = Query(...), entity: str = Query(...), seed: int = Query(0)):
+    if "stock" in dataset.lower() or "stock" in entity.lower():
+        raise HTTPException(status_code=400, detail="Stock dataset is excluded.")
+    
+    # Find entity in index
+    ent_list = indexer.index_cache.get(dataset, [])
+    target = next((e for e in ent_list if e["entity"] == entity), None)
+    if not target:
+        raise HTTPException(status_code=404, detail=f"Entity {entity} not found in {dataset}")
+
+    # Check if model exists
+    has_model = target["has_model"]
+    extra_data = {}
+    if has_model:
+        try:
+            d = engine.load_entity_data(dataset, entity, seed)
+            extra_data = {
+                "length": d["length"],
+                "default_threshold": d["default_threshold"],
+                "threshold_995": d["threshold_995"],
+                "threshold_990": d["threshold_990"],
+                "threshold_950": d["threshold_950"],
+                "max_anomaly_idx": d["max_anomaly_idx"],
+                "normal_idx": d["normal_idx"],
+                "feat_min": d["feat_min"],
+                "feat_max": d["feat_max"],
+                "feat_median": d["feat_median"],
+            }
+        except Exception as e:
+            extra_data = {"error": str(e)}
+
+    return {
+        "meta": target,
+        "selected_seed": seed,
+        "detail": extra_data,
+    }
+
+@app.post("/api/predict_point")
+def predict_point(req: PredictPointRequest):
+    if "stock" in req.dataset.lower() or "stock" in req.entity.lower():
+        raise HTTPException(status_code=400, detail="Stock dataset is excluded.")
+    try:
+        return engine.predict_point(
+            dataset=req.dataset,
+            entity=req.entity,
+            seed=req.seed,
+            point=req.point,
+            context_type=req.context_type,
+            custom_history=req.custom_history,
+            threshold_override=req.threshold_override,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/explain")
+def explain(req: ExplainRequest):
+    if "stock" in req.dataset.lower() or "stock" in req.entity.lower():
+        raise HTTPException(status_code=400, detail="Stock dataset is excluded.")
+    try:
+        return engine.explain(
+            dataset=req.dataset,
+            entity=req.entity,
+            seed=req.seed,
+            t=req.t,
+            custom_window=req.custom_window,
+            point=req.point,
+            is_custom_point=req.is_custom_point,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/series")
+def get_series(dataset: str = Query(...), entity: str = Query(...), seed: int = Query(0), max_points: int = Query(2000)):
+    if "stock" in dataset.lower() or "stock" in entity.lower():
+        raise HTTPException(status_code=400, detail="Stock dataset is excluded.")
+    try:
+        d = engine.load_entity_data(dataset, entity, seed)
+        N = d["length"]
+        # Downsample or window around peak
+        step = max(1, N // max_points)
+        indices = list(range(0, N, step))
+        return {
+            "indices": indices,
+            "anomaly_score": [float(d["anomaly_score"][i]) for i in indices],
+            "raw_score": [float(d["raw_score"][i]) for i in indices],
+            "input_first_feature": [float(d["inp_last"][i, 0]) for i in indices],
+            "max_anomaly_idx": d["max_anomaly_idx"],
+            "normal_idx": d["normal_idx"],
+            "threshold": d["default_threshold"],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Mount static files
+static_dir = os.path.join(CURRENT_DIR, "static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+@app.get("/")
+def serve_index():
+    index_file = os.path.join(static_dir, "index.html")
+    if os.path.exists(index_file):
+        return FileResponse(index_file)
+    return {"message": "RedLamp Demo API running. Static index.html not found."}
+
+if __name__ == "__main__":
+    import uvicorn
+    print("Khởi động RedLamp Web Demo tại http://127.0.0.1:8000")
+    uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=False)
+
