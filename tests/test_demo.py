@@ -9,11 +9,11 @@ if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
 from server import app
-from index import RedLampIndexer
+from index import RedLampIndexer, get_default_result_dir
 from engine import RedLampEngine
 
 client = TestClient(app)
-RESULT_DIR = r"D:\REDLAMP-danh\result"
+RESULT_DIR = get_default_result_dir()
 
 def test_index_five_datasets_and_no_stock():
     indexer = RedLampIndexer(RESULT_DIR)

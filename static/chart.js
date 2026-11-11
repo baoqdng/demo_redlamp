@@ -13,20 +13,40 @@ class SimpleCanvasChart {
     this.canvas = document.getElementById(canvasId);
     if (!this.canvas) return;
     this.ctx = this.canvas.getContext('2d');
+    this._lastDraw = null;
     this.resize();
-    window.addEventListener('resize', () => this.resize());
+
+    const onResize = () => {
+      if (this._resizeRaf) cancelAnimationFrame(this._resizeRaf);
+      this._resizeRaf = requestAnimationFrame(() => {
+        if (this._lastDraw) {
+          this._lastDraw();
+        } else {
+          this.resize();
+        }
+      });
+    };
+
+    window.addEventListener('resize', onResize);
+    if (window.ResizeObserver && this.canvas.parentElement) {
+      this._ro = new ResizeObserver(onResize);
+      this._ro.observe(this.canvas.parentElement);
+    }
   }
 
   resize() {
-    if (!this.canvas) return;
-    const rect = this.canvas.getBoundingClientRect();
+    if (!this.canvas) return false;
+    const host = this.canvas.parentElement || this.canvas;
+    const rect = host.getBoundingClientRect();
+    if (!rect.width || !rect.height) return false;
     const dpr = window.devicePixelRatio || 1;
     // Set actual canvas pixels for sharp retina rendering
-    this.canvas.width = (rect.width || 600) * dpr;
-    this.canvas.height = (rect.height || 300) * dpr;
+    this.canvas.width = Math.round(rect.width * dpr);
+    this.canvas.height = Math.round(rect.height * dpr);
     this.dpr = dpr;
     this.width = this.canvas.width;
     this.height = this.canvas.height;
+    return true;
   }
 
   clear() {
@@ -48,20 +68,24 @@ class SimpleCanvasChart {
    * options: { title, xLabel, yLabel, yMin, yMax, highlightWindow: [start, end], thresholdLine: val, badgeText: str }
    */
   drawLineChart(lines, options = {}) {
-    this.resize();
+    this._lastDraw = () => this.drawLineChart(lines, options);
+    if (!this.resize()) return;
     this.clear();
     const ctx = this.ctx;
     const dpr = this.dpr;
 
-    // Font size >= 24px per requirement
-    const FONT_TITLE = `bold ${Math.round(24 * dpr)}px var(--font-family, sans-serif)`;
-    const FONT_LABEL = `${Math.round(24 * dpr)}px var(--font-family, sans-serif)`;
-    const FONT_BADGE = `bold ${Math.round(24 * dpr)}px var(--font-family, sans-serif)`;
+    const cssH = this.height / dpr;
+    const scale = Math.min(1.0, Math.max(0.72, cssH / 300));
+    const fontStack = "'Segoe UI', Roboto, Arial, sans-serif";
 
-    const padLeft = 85 * dpr;
-    const padRight = 35 * dpr;
-    const padTop = options.title ? 60 * dpr : 40 * dpr;
-    const padBottom = 65 * dpr;
+    const FONT_TITLE = `bold ${Math.round(18 * scale * dpr)}px ${fontStack}`;
+    const FONT_LABEL = `600 ${Math.round(14 * scale * dpr)}px ${fontStack}`;
+    const FONT_BADGE = `bold ${Math.round(15 * scale * dpr)}px ${fontStack}`;
+
+    const padLeft = Math.round(64 * scale * dpr);
+    const padRight = Math.round(26 * scale * dpr);
+    const padTop = options.title ? Math.round(44 * scale * dpr) : Math.round(26 * scale * dpr);
+    const padBottom = Math.round(42 * scale * dpr);
 
     const plotW = this.width - padLeft - padRight;
     const plotH = this.height - padTop - padBottom;
@@ -170,14 +194,14 @@ class SimpleCanvasChart {
       ctx.fillStyle = '#0f172a';
       ctx.font = FONT_TITLE;
       ctx.textAlign = 'center';
-      ctx.fillText(options.title, padLeft + plotW / 2, 32 * dpr);
+      ctx.fillText(options.title, padLeft + plotW / 2, Math.round(22 * scale * dpr));
     }
 
     if (options.xLabel) {
       ctx.fillStyle = '#64748b';
       ctx.font = FONT_LABEL;
       ctx.textAlign = 'center';
-      ctx.fillText(options.xLabel, padLeft + plotW / 2, this.height - 15 * dpr);
+      ctx.fillText(options.xLabel, padLeft + plotW / 2, this.height - Math.round(12 * scale * dpr));
     }
 
     // 6. Draw Key Value Badge on Chart (e.g. "MSE = 0,043")
@@ -227,23 +251,23 @@ class SimpleCanvasChart {
       // Label text
       const markerLabel = options.pointMarker.label || 'Điểm nạp mới';
       ctx.fillStyle = '#dc2626';
-      ctx.font = `bold ${Math.round(22 * dpr)}px var(--font-family, sans-serif)`;
+      ctx.font = `bold ${Math.round(15 * scale * dpr)}px ${fontStack}`;
       ctx.textAlign = (px > padLeft + plotW - 140 * dpr) ? 'right' : 'left';
       ctx.fillText(markerLabel, px + ((px > padLeft + plotW - 140 * dpr) ? -14 * dpr : 14 * dpr), py - 12 * dpr);
     }
 
     // 7. Legend
     let legX = padLeft + 10 * dpr;
-    const legY = padTop + 20 * dpr;
+    const legY = padTop + 16 * dpr;
     ctx.font = FONT_LABEL;
     lines.slice(0, 3).forEach((line) => {
       ctx.fillStyle = line.color;
-      ctx.fillRect(legX, legY - 6 * dpr, 14 * dpr, 14 * dpr);
+      ctx.fillRect(legX, legY - 6 * dpr, 12 * dpr, 12 * dpr);
       ctx.fillStyle = '#1e293b';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(line.label, legX + 20 * dpr, legY);
-      legX += ctx.measureText(line.label).width + 35 * dpr;
+      ctx.fillText(line.label, legX + 18 * dpr, legY);
+      legX += ctx.measureText(line.label).width + 30 * dpr;
     });
   }
 
@@ -253,20 +277,25 @@ class SimpleCanvasChart {
    * options: { title, xLabel, yLabel, yMax, badgeText }
    */
   drawBarChart(bars, options = {}) {
-    this.resize();
+    this._lastDraw = () => this.drawBarChart(bars, options);
+    if (!this.resize()) return;
     this.clear();
     const ctx = this.ctx;
     const dpr = this.dpr;
 
-    const FONT_TITLE = `bold ${Math.round(24 * dpr)}px var(--font-family, sans-serif)`;
-    const FONT_LABEL = `${Math.round(24 * dpr)}px var(--font-family, sans-serif)`;
-    const FONT_BAR_LABEL = `${Math.round(20 * dpr)}px var(--font-family, sans-serif)`;
-    const FONT_BADGE = `bold ${Math.round(24 * dpr)}px var(--font-family, sans-serif)`;
+    const cssH = this.height / dpr;
+    const scale = Math.min(1.0, Math.max(0.72, cssH / 300));
+    const fontStack = "'Segoe UI', Roboto, Arial, sans-serif";
 
-    const padLeft = 80 * dpr;
-    const padRight = 25 * dpr;
-    const padTop = options.title ? 60 * dpr : 40 * dpr;
-    const padBottom = 80 * dpr;
+    const FONT_TITLE = `bold ${Math.round(18 * scale * dpr)}px ${fontStack}`;
+    const FONT_LABEL = `600 ${Math.round(14 * scale * dpr)}px ${fontStack}`;
+    const FONT_BAR_LABEL = `bold ${Math.round(13.5 * scale * dpr)}px ${fontStack}`;
+    const FONT_BADGE = `bold ${Math.round(15 * scale * dpr)}px ${fontStack}`;
+
+    const padLeft = Math.round(62 * scale * dpr);
+    const padRight = Math.round(24 * scale * dpr);
+    const padTop = options.title ? Math.round(44 * scale * dpr) : Math.round(26 * scale * dpr);
+    const padBottom = Math.round(56 * scale * dpr);
 
     const plotW = this.width - padLeft - padRight;
     const plotH = this.height - padTop - padBottom;
@@ -332,7 +361,7 @@ class SimpleCanvasChart {
       // Top label for top class
       if (bar.isTop && val > 0.02) {
         ctx.fillStyle = '#dc2626';
-        ctx.font = `bold ${Math.round(20 * dpr)}px var(--font-family, sans-serif)`;
+        ctx.font = `bold ${Math.round(14 * scale * dpr)}px ${fontStack}`;
         ctx.textAlign = 'center';
         ctx.fillText(`${(val * 100).toFixed(1)}%`, bx + barWidth / 2, by - 6 * dpr);
       }
@@ -343,7 +372,7 @@ class SimpleCanvasChart {
       ctx.fillStyle = '#0f172a';
       ctx.font = FONT_TITLE;
       ctx.textAlign = 'center';
-      ctx.fillText(options.title, padLeft + plotW / 2, 32 * dpr);
+      ctx.fillText(options.title, padLeft + plotW / 2, Math.round(22 * scale * dpr));
     }
 
     if (options.badgeText) {

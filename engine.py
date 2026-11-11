@@ -6,11 +6,17 @@ import torch
 import torch.nn as nn
 from typing import Dict, Any, List, Optional, Tuple
 
-# Add REDLAMP-main to sys.path
-REDLAMP_PATH = r"D:\REDLAMP-danh\REDLAMP-main"
+# Add REDLAMP-main / RedLamp to sys.path
+_DANH_REDLAMP_PATH = r"D:\REDLAMP-danh\REDLAMP-main"
+REDLAMP_PATH = (
+    _DANH_REDLAMP_PATH
+    if os.path.exists(_DANH_REDLAMP_PATH)
+    else os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "RedLamp"))
+)
 if REDLAMP_PATH not in sys.path:
     sys.path.insert(0, REDLAMP_PATH)
 
+from index import ensure_kaggle_file, get_default_result_dir
 import utils
 from models.meta import ConvAEC
 
@@ -83,23 +89,26 @@ PSEUDO_ANOMALY_INFO = {
 }
 
 class RedLampEngine:
-    def __init__(self, result_dir: str):
-        self.result_dir = os.path.abspath(result_dir)
+    def __init__(self, result_dir: Optional[str] = None):
+        self.result_dir = os.path.abspath(result_dir or get_default_result_dir())
         self.model_cache: Dict[Tuple[str, str, int], Any] = {}
         self.data_cache: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
 
     def get_model_path(self, dataset: str, entity: str, seed: int) -> Optional[str]:
         if dataset in ["msl", "smap"]:
-            p = os.path.join(self.result_dir, dataset, "d1_b128_w100_s10", str(seed), "bestmodel.pkl")
-            if os.path.exists(p):
+            rel = f"{dataset}/d1_b128_w100_s10/{seed}/bestmodel.pkl"
+            p = ensure_kaggle_file(self.result_dir, rel)
+            if p and os.path.exists(p):
                 return p
         elif dataset in ["iops", "aiops"]:
-            p = os.path.join(self.result_dir, "aiops", entity, "d1_b128_w100_s10", str(seed), "bestmodel.pkl")
-            if os.path.exists(p):
+            rel = f"aiops/{entity}/d1_b128_w100_s10/{seed}/bestmodel.pkl"
+            p = ensure_kaggle_file(self.result_dir, rel)
+            if p and os.path.exists(p):
                 return p
         elif dataset == "smd":
-            p = os.path.join(self.result_dir, "smd", entity, "d1_b128_w100_s10", str(seed), "bestmodel.pkl")
-            if os.path.exists(p):
+            rel = f"smd/{entity}/d1_b128_w100_s10/{seed}/bestmodel.pkl"
+            p = ensure_kaggle_file(self.result_dir, rel)
+            if p and os.path.exists(p):
                 return p
         elif dataset == "anomaly_archive":
             # Search under anomaly_archive/entity/.../0/bestmodel.pkl
@@ -109,21 +118,35 @@ class RedLampEngine:
                 return matches[0]
         return None
 
+    def _ensure_test_files(self, rel_dir: str) -> Optional[str]:
+        required_files = ["anomaly_score.npy", "input_last.npy", "mse.npy", "pred_label.npy"]
+        local_dir = os.path.join(self.result_dir, *rel_dir.split("/"))
+        for fname in required_files:
+            fpath = os.path.join(local_dir, fname)
+            if not os.path.exists(fpath) or os.path.getsize(fpath) == 0:
+                ensure_kaggle_file(self.result_dir, f"{rel_dir}/{fname}")
+        if os.path.exists(os.path.join(local_dir, "anomaly_score.npy")):
+            return local_dir
+        return None
+
     def get_test_dir(self, dataset: str, entity: str, seed: int) -> Optional[str]:
         if dataset in ["msl", "smap"]:
-            d = os.path.join(self.result_dir, dataset, "d1_b128_w100_s10", str(seed), "test_each", entity, "test_all")
-            if os.path.exists(d):
+            rel_dir = f"{dataset}/d1_b128_w100_s10/{seed}/test_each/{entity}/test_all"
+            d = self._ensure_test_files(rel_dir)
+            if d and os.path.exists(d):
                 return d
             d_all = os.path.join(self.result_dir, dataset, "d1_b128_w100_s10", str(seed), "test_all")
             if os.path.exists(d_all):
                 return d_all
         elif dataset in ["iops", "aiops"]:
-            d = os.path.join(self.result_dir, "aiops", entity, "d1_b128_w100_s10", str(seed), "test_all")
-            if os.path.exists(d):
+            rel_dir = f"aiops/{entity}/d1_b128_w100_s10/{seed}/test_all"
+            d = self._ensure_test_files(rel_dir)
+            if d and os.path.exists(d):
                 return d
         elif dataset == "smd":
-            d = os.path.join(self.result_dir, "smd", entity, "d1_b128_w100_s10", str(seed), "test_all")
-            if os.path.exists(d):
+            rel_dir = f"smd/{entity}/d1_b128_w100_s10/{seed}/test_all"
+            d = self._ensure_test_files(rel_dir)
+            if d and os.path.exists(d):
                 return d
         elif dataset == "anomaly_archive":
             pattern = os.path.join(self.result_dir, "anomaly_archive", entity, "**", "test_all")

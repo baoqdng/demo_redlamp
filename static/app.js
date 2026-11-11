@@ -38,6 +38,26 @@ document.addEventListener('DOMContentLoaded', () => {
     chartSlide5 = new SimpleCanvasChart('canvas-slide-5');
   }
 
+  // Loading Indicator Helpers
+  let loadingCount = 0;
+  function showLoading(title = 'Đang xử lý dữ liệu...', subtitle = 'Hệ thống đang nạp mô hình và tính toán, vui lòng chờ trong giây lát') {
+    loadingCount++;
+    const overlay = document.getElementById('app-loading-overlay');
+    const titleEl = document.getElementById('loading-title');
+    const subEl = document.getElementById('loading-subtitle');
+    if (titleEl) titleEl.textContent = title;
+    if (subEl) subEl.textContent = subtitle;
+    if (overlay) overlay.style.display = 'flex';
+  }
+
+  function hideLoading() {
+    loadingCount = Math.max(0, loadingCount - 1);
+    if (loadingCount === 0) {
+      const overlay = document.getElementById('app-loading-overlay');
+      if (overlay) overlay.style.display = 'none';
+    }
+  }
+
   // API Call Helpers
   async function fetchJSON(url, options = {}) {
     try {
@@ -55,6 +75,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 1. Initial Load: /api/index
   async function loadIndex() {
+    showLoading('Đang khởi tạo danh mục Dataset...', 'Đang đọc chỉ số đánh giá của 5 bộ dữ liệu chuẩn');
     try {
       indexData = await fetchJSON('/api/index');
       setupDatasetDropdown();
@@ -65,9 +86,11 @@ document.addEventListener('DOMContentLoaded', () => {
         currentDataset = Object.keys(indexData)[0];
       }
       document.getElementById('select-dataset').value = currentDataset;
-      updateEntityDropdown();
+      await updateEntityDropdown();
     } catch (e) {
       alert('Không thể nạp danh mục dataset: ' + e.message);
+    } finally {
+      hideLoading();
     }
   }
 
@@ -78,9 +101,12 @@ document.addEventListener('DOMContentLoaded', () => {
       updateEntityDropdown();
     });
 
-    document.getElementById('input-search-entity').addEventListener('input', (e) => {
-      filterEntities(e.target.value);
-    });
+    const searchInput = document.getElementById('input-search-entity');
+    if (searchInput) {
+      searchInput.addEventListener('input', (e) => {
+        filterEntities(e.target.value);
+      });
+    }
 
     document.getElementById('select-entity').addEventListener('change', (e) => {
       currentEntity = e.target.value;
@@ -93,7 +119,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  function updateEntityDropdown() {
+  function updateEntityDropdown(autoLoad = true) {
     const ents = indexData[currentDataset] || [];
     const sel = document.getElementById('select-entity');
     sel.innerHTML = '';
@@ -117,7 +143,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (ents.length > 0) {
       currentEntity = ents[0].entity;
       sel.value = currentEntity;
-      onEntityChanged();
+      if (autoLoad) {
+        return onEntityChanged();
+      }
     }
   }
 
@@ -143,6 +171,14 @@ document.addEventListener('DOMContentLoaded', () => {
   // 2. Load Entity Details: /api/entity
   async function onEntityChanged() {
     if (!currentEntity) return;
+    const st = document.getElementById('cfg-status');
+    if (st) {
+      st.innerHTML = '<span class="badge badge-loading">⏳ Đang tải &amp; nạp mô hình...</span>';
+    }
+    showLoading(
+      `Đang nạp thực thể ${currentEntity} (Seed ${currentSeed})...`,
+      'Đang tải dữ liệu chuỗi thời gian, checkpoint mô hình ConvAEC và tính toán giải thích'
+    );
     try {
       const data = await fetchJSON(`/api/entity?dataset=${currentDataset}&entity=${currentEntity}&seed=${currentSeed}`);
       currentEntityMeta = data.meta;
@@ -154,13 +190,6 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('cfg-step').textContent = currentEntityMeta.window_step;
       document.getElementById('cfg-embedding').textContent = currentEntityMeta.embedding_dim;
       document.getElementById('cfg-path').textContent = currentEntityMeta.model_path || '(Chưa tải mô hình cục bộ)';
-      
-      const st = document.getElementById('cfg-status');
-      if (currentEntityMeta.has_model) {
-        st.innerHTML = '<span class="badge badge-success">Model đã nạp trong bộ nhớ</span>';
-      } else {
-        st.innerHTML = '<span class="badge badge-danger">Chỉ có chỉ số kiểm nghiệm</span>';
-      }
 
       // Update 3 Metrics
       updateMetricsDisplay();
@@ -168,14 +197,25 @@ document.addEventListener('DOMContentLoaded', () => {
       // Setup Point Inputs
       setupPointInputs(currentEntityMeta.n_features);
 
-      // Load Overview Series Chart
+      // Load Overview Series Chart & Explain Data
       if (currentEntityMeta.has_model) {
-        loadSeriesOverview();
-        // Load Explain Data for Step 1-5
-        loadExplainData();
+        await Promise.all([
+          loadSeriesOverview(),
+          loadExplainData(null, false),
+        ]);
+        if (st) {
+          st.innerHTML = '<span class="badge badge-success">Model đã nạp trong bộ nhớ</span>';
+        }
+      } else if (st) {
+        st.innerHTML = '<span class="badge badge-danger">Chỉ có chỉ số kiểm nghiệm</span>';
       }
     } catch (e) {
       console.error(e);
+      if (st) {
+        st.innerHTML = '<span class="badge badge-danger">Lỗi nạp dữ liệu</span>';
+      }
+    } finally {
+      hideLoading();
     }
   }
 
@@ -274,24 +314,23 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       const grid = document.createElement('div');
       grid.style.display = 'grid';
-      grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(80px, 1fr))';
-      grid.style.gap = '8px';
-      grid.style.maxHeight = '180px';
-      grid.style.overflowY = 'auto';
-      grid.style.padding = '8px';
+      grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(72px, 1fr))';
+      grid.style.gap = '6px';
+      grid.style.padding = '6px';
       grid.style.border = '1px solid #e2e8f0';
       grid.style.borderRadius = '6px';
 
       for (let i = 0; i < nFeatures; i++) {
         const wrap = document.createElement('div');
-        wrap.innerHTML = `<small style="font-size:10px; color:#64748b;">D${i+1}</small>`;
+        wrap.innerHTML = `<small style="font-size:12px; font-weight:700; color:#334155;">D${i+1}</small>`;
         const inp = document.createElement('input');
         inp.type = 'number';
         inp.step = 'any';
         inp.className = 'form-control pt-feat';
         inp.dataset.idx = i;
-        inp.style.fontSize = '12px';
-        inp.style.padding = '4px';
+        inp.style.fontSize = '14px';
+        inp.style.height = '32px';
+        inp.style.padding = '4px 6px';
         if (currentEntityDetail && currentEntityDetail.feat_median) {
           inp.value = parseFloat(currentEntityDetail.feat_median[i].toFixed(3));
         } else {
@@ -377,6 +416,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     const thOverride = parseFloat(document.getElementById('slider-threshold').value);
+    const btnPredict = document.getElementById('btn-run-predict');
+    const origBtnText = btnPredict.textContent;
+    btnPredict.disabled = true;
+    btnPredict.textContent = '⏳ Đang suy luận bất thường...';
+    showLoading(
+      'Đang dự đoán điểm dữ liệu mới...',
+      `Đang chạy cửa sổ 100 điểm qua ConvAEC cho ${currentEntity} (Seed ${currentSeed})`
+    );
 
     try {
       const res = await fetchJSON('/api/predict_point', {
@@ -471,6 +518,10 @@ document.addEventListener('DOMContentLoaded', () => {
       renderPredictWindowChart(res.window_input, res.reconstructed, res.raw_mse);
     } catch (e) {
       alert('Lỗi dự đoán: ' + e.message);
+    } finally {
+      btnPredict.disabled = false;
+      btnPredict.textContent = origBtnText;
+      hideLoading();
     }
   });
 
@@ -487,6 +538,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function loadExplainCustomPoint() {
     if (!lastPredictedWindow) return;
+    showLoading(
+      'Đang đồng bộ giải thích 5 bước cho điểm mới...',
+      'Đang trích xuất đặc trưng Encoder, tái tạo Decoder và phân loại 12 lớp tại t=99'
+    );
     try {
       explainData = await fetchJSON('/api/explain', {
         method: 'POST',
@@ -505,6 +560,8 @@ document.addEventListener('DOMContentLoaded', () => {
       goToStep(0);
     } catch (e) {
       alert('Không thể giải thích điểm này: ' + e.message);
+    } finally {
+      hideLoading();
     }
   }
 
@@ -553,8 +610,14 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // 5. Explainable 5-minute Mode
-  async function loadExplainData(t = null) {
+  async function loadExplainData(t = null, showOverlay = true) {
     if (!currentEntityMeta || !currentEntityMeta.has_model) return;
+    if (showOverlay) {
+      showLoading(
+        t !== null ? `Đang tính toán giải thích tại cửa sổ t = ${t}...` : `Đang tải giải thích cho ${currentEntity}...`,
+        'Đang trích xuất kích hoạt trung gian qua 4 khối ConvBlock, Decoder và Classifier'
+      );
+    }
     try {
       isCustomPointExplain = false;
       explainData = await fetchJSON('/api/explain', {
@@ -579,6 +642,8 @@ document.addEventListener('DOMContentLoaded', () => {
       renderCurrentStep();
     } catch (e) {
       console.warn('Explain load failed:', e);
+    } finally {
+      if (showOverlay) hideLoading();
     }
   }
 
@@ -783,7 +848,7 @@ document.addEventListener('DOMContentLoaded', () => {
         ? '<span style="color:#dc2626; font-weight:bold;">BẤT THƯỜNG</span>' 
         : '<span style="color:#16a34a; font-weight:bold;">BÌNH THƯỜNG</span>';
       eqEl.innerHTML = `
-        Điểm cuối = (Điểm tái tạo + Điểm phân loại) / 2 <br>
+        Điểm cuối = (Điểm tái tạo + Điểm phân loại) / 2
         = (${explainData.raw_mse.toFixed(4)} + ${explainData.raw_ce.toFixed(4)}) / 2 
         = <strong>${explainData.raw_combined.toFixed(4)}</strong>
         (Ngưỡng P99.5 = ${explainData.threshold.toFixed(4)} &rArr; ${conclusionBadge})
@@ -805,35 +870,29 @@ document.addEventListener('DOMContentLoaded', () => {
       // Trigger redraw of charts on tab display
       setTimeout(() => {
         if (targetId === 'tab-pretrain') renderOverviewChart();
+        else if (targetId === 'tab-predict') {
+          if (lastPredictedResult) {
+            renderPredictWindowChart(lastPredictedResult.window_input, lastPredictedResult.reconstructed, lastPredictedResult.raw_mse);
+          } else if (explainData && explainData.win_normal) {
+            renderPredictWindowChart(
+              explainData.win_normal.map(v => [v]),
+              explainData.rec_normal.map(v => [v]),
+              explainData.mse_normal
+            );
+          }
+        }
         else if (targetId === 'tab-explain') renderCurrentStep();
       }, 50);
     });
   });
 
-  // 7. Preset & Fullscreen controls
-  document.getElementById('btn-demo-preset').addEventListener('click', () => {
-    // Preset: SMD machine-1-1 seed 0
-    currentDataset = 'smd';
-    document.getElementById('select-dataset').value = currentDataset;
-    updateEntityDropdown();
-    currentEntity = 'machine-1-1';
-    document.getElementById('select-entity').value = currentEntity;
-    currentSeed = 0;
-    document.getElementById('select-seed').value = '0';
-    onEntityChanged().then(() => {
-      // Switch to explain tab
-      document.querySelector('[data-tab="tab-explain"]').click();
-      goToStep(0);
-    });
-  });
-
-  const btnFullscreen = document.getElementById('btn-fullscreen');
-  btnFullscreen.addEventListener('click', () => {
-    document.body.classList.toggle('fullscreen-mode');
-    btnFullscreen.textContent = document.body.classList.contains('fullscreen-mode') ? 'Thu nhỏ' : '⛶ Toàn màn hình';
-    setTimeout(() => {
-      renderCurrentStep();
-    }, 100);
+  window.addEventListener('resize', () => {
+    const activeTab = document.querySelector('.tab-content.active');
+    if (!activeTab) return;
+    if (activeTab.id === 'tab-pretrain') renderOverviewChart();
+    else if (activeTab.id === 'tab-predict' && lastPredictedResult) {
+      renderPredictWindowChart(lastPredictedResult.window_input, lastPredictedResult.reconstructed, lastPredictedResult.raw_mse);
+    } else if (activeTab.id === 'tab-explain') renderCurrentStep();
   });
 
   // Export PNG buttons

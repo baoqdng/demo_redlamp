@@ -14,9 +14,9 @@ if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
 
 from engine import RedLampEngine
-from index import RedLampIndexer
+from index import RedLampIndexer, get_default_result_dir
 
-RESULT_DIR = r"D:\REDLAMP-danh\result"
+RESULT_DIR = get_default_result_dir()
 
 def main():
     indexer = RedLampIndexer(RESULT_DIR)

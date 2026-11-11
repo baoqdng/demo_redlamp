@@ -12,9 +12,9 @@ if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
 from engine import RedLampEngine
-from index import RedLampIndexer
+from index import RedLampIndexer, get_default_result_dir
 
-RESULT_DIR = r"D:\REDLAMP-danh\result"
+RESULT_DIR = get_default_result_dir()
 
 app = FastAPI(title="RedLamp Web Demo", description="Hệ thống demo phát hiện bất thường chuỗi thời gian không giám sát")
 
@@ -68,6 +68,8 @@ def get_entity(dataset: str = Query(...), entity: str = Query(...), seed: int = 
     if has_model:
         try:
             d = engine.load_entity_data(dataset, entity, seed)
+            if not target.get("model_path"):
+                target["model_path"] = engine.get_model_path(dataset, entity, seed)
             extra_data = {
                 "length": d["length"],
                 "default_threshold": d["default_threshold"],
