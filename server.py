@@ -59,6 +59,15 @@ def get_entity(dataset: str = Query(...), entity: str = Query(...), seed: int = 
     # Find entity in index
     ent_list = indexer.index_cache.get(dataset, [])
     target = next((e for e in ent_list if e["entity"] == entity), None)
+    if not target and entity.upper() == "ALL" and ent_list:
+        rep = ent_list[0]
+        target = {
+            **rep,
+            "entity": "ALL",
+            "display_name": f"ALL (Trung bình cả {len(ent_list)} thực thể)",
+            "representative_entity": rep["entity"],
+            "num_entities": len(ent_list),
+        }
     if not target:
         raise HTTPException(status_code=404, detail=f"Entity {entity} not found in {dataset}")
 
@@ -126,7 +135,13 @@ def explain(req: ExplainRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/series")
-def get_series(dataset: str = Query(...), entity: str = Query(...), seed: int = Query(0), max_points: int = Query(2000)):
+def get_series(
+    dataset: str = Query(...),
+    entity: str = Query(...),
+    seed: int = Query(0),
+    feature: str = Query("0"),
+    max_points: int = Query(2000),
+):
     if "stock" in dataset.lower() or "stock" in entity.lower():
         raise HTTPException(status_code=400, detail="Stock dataset is excluded.")
     try:
@@ -135,11 +150,26 @@ def get_series(dataset: str = Query(...), entity: str = Query(...), seed: int = 
         # Downsample or window around peak
         step = max(1, N // max_points)
         indices = list(range(0, N, step))
+        inp = d["inp_last"]
+        D = inp.shape[1] if inp.ndim > 1 else 1
+        f_key = str(feature).strip().lower()
+        if D == 1:
+            feat_vals = [float(inp[i, 0]) for i in indices]
+        elif f_key == "mean":
+            feat_vals = [float(inp[i].mean()) for i in indices]
+        elif f_key == "max":
+            feat_vals = [float(inp[i].max()) for i in indices]
+        else:
+            try:
+                f_idx = max(0, min(int(f_key), D - 1))
+            except ValueError:
+                f_idx = 0
+            feat_vals = [float(inp[i, f_idx]) for i in indices]
         return {
             "indices": indices,
             "anomaly_score": [float(d["anomaly_score"][i]) for i in indices],
             "raw_score": [float(d["raw_score"][i]) for i in indices],
-            "input_first_feature": [float(d["inp_last"][i, 0]) for i in indices],
+            "input_first_feature": feat_vals,
             "max_anomaly_idx": d["max_anomaly_idx"],
             "normal_idx": d["normal_idx"],
             "threshold": d["default_threshold"],

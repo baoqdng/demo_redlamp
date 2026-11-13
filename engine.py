@@ -94,7 +94,21 @@ class RedLampEngine:
         self.model_cache: Dict[Tuple[str, str, int], Any] = {}
         self.data_cache: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
 
+    def _resolve_entity(self, dataset: str, entity: str) -> str:
+        if entity and entity.upper() != "ALL":
+            return entity
+        defaults = {
+            "smd": "machine-1-1",
+            "iops": "KPI-05f10d3a-239c-3bef-9bdc-a2feeb0037aa",
+            "aiops": "KPI-05f10d3a-239c-3bef-9bdc-a2feeb0037aa",
+            "msl": "C-1",
+            "smap": "A-1",
+            "anomaly_archive": "001",
+        }
+        return defaults.get(dataset, entity)
+
     def get_model_path(self, dataset: str, entity: str, seed: int) -> Optional[str]:
+        entity = self._resolve_entity(dataset, entity)
         if dataset in ["msl", "smap"]:
             rel = f"{dataset}/d1_b128_w100_s10/{seed}/bestmodel.pkl"
             p = ensure_kaggle_file(self.result_dir, rel)
@@ -130,6 +144,7 @@ class RedLampEngine:
         return None
 
     def get_test_dir(self, dataset: str, entity: str, seed: int) -> Optional[str]:
+        entity = self._resolve_entity(dataset, entity)
         if dataset in ["msl", "smap"]:
             rel_dir = f"{dataset}/d1_b128_w100_s10/{seed}/test_each/{entity}/test_all"
             d = self._ensure_test_files(rel_dir)
@@ -156,6 +171,7 @@ class RedLampEngine:
         return None
 
     def load_model(self, dataset: str, entity: str, seed: int) -> Tuple[ConvAEC, utils.AttrDict]:
+        entity = self._resolve_entity(dataset, entity)
         key = (dataset, entity, seed)
         if key in self.model_cache:
             return self.model_cache[key]
@@ -206,6 +222,7 @@ class RedLampEngine:
         return model, params
 
     def load_entity_data(self, dataset: str, entity: str, seed: int) -> Dict[str, Any]:
+        entity = self._resolve_entity(dataset, entity)
         key = (dataset, entity, seed)
         if key in self.data_cache:
             return self.data_cache[key]

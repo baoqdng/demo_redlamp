@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let explainData = null;
   let currentStep = 0; // 0..4
   let seriesOverviewData = null;
+  let currentOverviewFeature = '0';
   let lastPredictedWindow = null;
   let lastPredictedPoint = null;
   let lastPredictedResult = null;
@@ -119,14 +120,30 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  function getEntitiesWithAll(ds) {
+    const raw = indexData[ds] || [];
+    if (raw.length > 0 && raw[0].entity !== 'ALL') {
+      const rep = raw[0];
+      return [{
+        ...rep,
+        entity: 'ALL',
+        display_name: `ALL (Trung bình cả ${raw.length} thực thể)`,
+        representative_entity: rep.entity,
+        num_entities: raw.length,
+      }, ...raw];
+    }
+    return raw;
+  }
+
   function updateEntityDropdown(autoLoad = true) {
-    const ents = indexData[currentDataset] || [];
+    const ents = getEntitiesWithAll(currentDataset);
     const sel = document.getElementById('select-entity');
     sel.innerHTML = '';
     ents.forEach(e => {
       const opt = document.createElement('option');
       opt.value = e.entity;
-      opt.textContent = e.entity + (e.has_model ? '' : ' (chỉ có số liệu)');
+      const label = e.display_name || e.entity;
+      opt.textContent = label + (e.has_model ? '' : ' (chỉ có số liệu)');
       sel.appendChild(opt);
     });
 
@@ -151,14 +168,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function filterEntities(query) {
     const q = query.toLowerCase().trim();
-    const ents = indexData[currentDataset] || [];
+    const ents = getEntitiesWithAll(currentDataset);
     const sel = document.getElementById('select-entity');
     sel.innerHTML = '';
-    const filtered = ents.filter(e => e.entity.toLowerCase().includes(q));
+    const filtered = ents.filter(e =>
+      e.entity.toLowerCase().includes(q) || (e.display_name && e.display_name.toLowerCase().includes(q))
+    );
     filtered.forEach(e => {
       const opt = document.createElement('option');
       opt.value = e.entity;
-      opt.textContent = e.entity + (e.has_model ? '' : ' (chỉ có số liệu)');
+      const label = e.display_name || e.entity;
+      opt.textContent = label + (e.has_model ? '' : ' (chỉ có số liệu)');
       sel.appendChild(opt);
     });
     if (filtered.length > 0) {
@@ -189,13 +209,18 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('cfg-window').textContent = currentEntityMeta.window_size;
       document.getElementById('cfg-step').textContent = currentEntityMeta.window_step;
       document.getElementById('cfg-embedding').textContent = currentEntityMeta.embedding_dim;
-      document.getElementById('cfg-path').textContent = currentEntityMeta.model_path || '(Chưa tải mô hình cục bộ)';
+      const baseModelPath = currentEntityMeta.model_path || '(Chưa tải mô hình cục bộ)';
+      document.getElementById('cfg-path').textContent =
+        (currentEntity === 'ALL' && currentEntityMeta.representative_entity)
+          ? `${baseModelPath} (Mẫu đại diện: ${currentEntityMeta.representative_entity})`
+          : baseModelPath;
 
       // Update 3 Metrics
       updateMetricsDisplay();
 
-      // Setup Point Inputs
+      // Setup Point Inputs & Overview Feature Dropdown
       setupPointInputs(currentEntityMeta.n_features);
+      setupOverviewFeatureDropdown(currentEntityMeta.n_features);
 
       // Load Overview Series Chart & Explain Data
       if (currentEntityMeta.has_model) {
@@ -235,25 +260,42 @@ document.addEventListener('DOMContentLoaded', () => {
       const agg = meta.aggregate_metrics;
       const seedVal = meta.per_seed_metrics[currentSeed] || { vus_roc: 0, vus_pr: 0, rf: 0 };
 
-      subTitle.textContent = `Thực thể ${currentEntity} (Đang chọn Seed ${currentSeed}):`;
-      rocEl.textContent = seedVal.vus_roc.toFixed(4);
-      rocSub.textContent = `Trung bình 5 seed: ${agg.vus_roc_mean.toFixed(3)} ± ${agg.vus_roc_std.toFixed(3)}`;
+      if (currentEntity === 'ALL') {
+        const nEnt = meta.num_entities || '';
+        subTitle.textContent = `Trung bình toàn tập (${nEnt} thực thể — Đang chọn Seed ${currentSeed}):`;
+        rocEl.textContent = seedVal.vus_roc.toFixed(4);
+        rocSub.textContent = `Trung bình 5 seed: ${agg.vus_roc_mean.toFixed(3)} ± ${agg.vus_roc_std.toFixed(3)}`;
 
-      prEl.textContent = seedVal.vus_pr.toFixed(4);
-      prSub.textContent = `Trung bình 5 seed: ${agg.vus_pr_mean.toFixed(3)} ± ${agg.vus_pr_std.toFixed(3)}`;
+        prEl.textContent = seedVal.vus_pr.toFixed(4);
+        prSub.textContent = `Trung bình 5 seed: ${agg.vus_pr_mean.toFixed(3)} ± ${agg.vus_pr_std.toFixed(3)}`;
 
-      rfEl.textContent = seedVal.rf.toFixed(4);
-      rfSub.textContent = `Trung bình 5 seed: ${agg.rf_mean.toFixed(3)} ± ${agg.rf_std.toFixed(3)}`;
+        rfEl.textContent = seedVal.rf.toFixed(4);
+        rfSub.textContent = `Trung bình 5 seed: ${agg.rf_mean.toFixed(3)} ± ${agg.rf_std.toFixed(3)}`;
+      } else {
+        subTitle.textContent = `Thực thể ${currentEntity} (Đang chọn Seed ${currentSeed}):`;
+        rocEl.textContent = seedVal.vus_roc.toFixed(4);
+        rocSub.textContent = `Trung bình 5 seed: ${agg.vus_roc_mean.toFixed(3)} ± ${agg.vus_roc_std.toFixed(3)}`;
+
+        prEl.textContent = seedVal.vus_pr.toFixed(4);
+        prSub.textContent = `Trung bình 5 seed: ${agg.vus_pr_mean.toFixed(3)} ± ${agg.vus_pr_std.toFixed(3)}`;
+
+        rfEl.textContent = seedVal.rf.toFixed(4);
+        rfSub.textContent = `Trung bình 5 seed: ${agg.rf_mean.toFixed(3)} ± ${agg.rf_std.toFixed(3)}`;
+      }
     } else if (meta.single_metrics) {
-      subTitle.textContent = `Thực thể ${currentEntity} (Đánh giá chuẩn):`;
+      if (currentEntity === 'ALL') {
+        subTitle.textContent = `Trung bình toàn tập (${meta.num_entities || 250} thực thể — Đánh giá chuẩn):`;
+      } else {
+        subTitle.textContent = `Thực thể ${currentEntity} (Đánh giá chuẩn):`;
+      }
       rocEl.textContent = meta.single_metrics.vus_roc.toFixed(4);
-      rocSub.textContent = 'Giá trị đơn từ thực nghiệm';
+      rocSub.textContent = 'Giá trị chuẩn từ thực nghiệm';
 
       prEl.textContent = meta.single_metrics.vus_pr.toFixed(4);
-      prSub.textContent = 'Giá trị đơn từ thực nghiệm';
+      prSub.textContent = 'Giá trị chuẩn từ thực nghiệm';
 
       rfEl.textContent = meta.single_metrics.rf.toFixed(4);
-      rfSub.textContent = 'Giá trị đơn từ thực nghiệm';
+      rfSub.textContent = 'Giá trị chuẩn từ thực nghiệm';
     } else {
       rocEl.textContent = '--';
       prEl.textContent = '--';
@@ -262,9 +304,44 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // 3. Load Series Overview
+  function setupOverviewFeatureDropdown(nFeatures) {
+    const grp = document.getElementById('group-overview-feature');
+    const sel = document.getElementById('select-overview-feature');
+    if (!grp || !sel) return;
+
+    if (nFeatures <= 1) {
+      grp.style.display = 'none';
+      currentOverviewFeature = '0';
+      return;
+    }
+
+    grp.style.display = 'flex';
+    const prevVal = currentOverviewFeature;
+    sel.innerHTML = '';
+
+    for (let i = 0; i < nFeatures; i++) {
+      const opt = document.createElement('option');
+      opt.value = String(i);
+      opt.textContent = `Đặc trưng D${i + 1}`;
+      sel.appendChild(opt);
+    }
+
+    const parsedPrev = parseInt(prevVal, 10);
+    const validPrev = !isNaN(parsedPrev) && parsedPrev >= 0 && parsedPrev < nFeatures;
+    currentOverviewFeature = validPrev ? String(parsedPrev) : '0';
+    sel.value = currentOverviewFeature;
+
+    sel.onchange = (e) => {
+      currentOverviewFeature = e.target.value;
+      loadSeriesOverview();
+    };
+  }
+
   async function loadSeriesOverview() {
     try {
-      const data = await fetchJSON(`/api/series?dataset=${currentDataset}&entity=${currentEntity}&seed=${currentSeed}`);
+      const data = await fetchJSON(
+        `/api/series?dataset=${currentDataset}&entity=${currentEntity}&seed=${currentSeed}&feature=${encodeURIComponent(currentOverviewFeature)}`
+      );
       seriesOverviewData = data;
       renderOverviewChart();
     } catch (e) {
@@ -274,10 +351,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function renderOverviewChart() {
     if (!chartOverview || !seriesOverviewData) return;
+    const nFeat = (currentEntityMeta && currentEntityMeta.n_features) ? currentEntityMeta.n_features : 1;
+    let inputLabel = 'Tín hiệu chuỗi thời gian gốc';
+    if (nFeat > 1) {
+      const idx = parseInt(currentOverviewFeature, 10) || 0;
+      inputLabel = `Tín hiệu gốc (Đặc trưng D${idx + 1} / ${nFeat} đặc trưng)`;
+    }
     const inputLine = {
-      label: 'Chuỗi đo lường (Chiều 1)',
+      label: inputLabel,
       data: seriesOverviewData.input_first_feature,
-      color: '#334155', // dark gray
+      color: '#334155', // dark slate blue
       width: 2,
     };
     const scoreLine = {
@@ -286,8 +369,12 @@ document.addEventListener('DOMContentLoaded', () => {
       color: '#dc2626', // red
       width: 2,
     };
+    const chartEntityLabel =
+      (currentEntity === 'ALL' && currentEntityMeta && currentEntityMeta.representative_entity)
+        ? `ALL — Chuỗi mẫu đại diện: ${currentEntityMeta.representative_entity}`
+        : currentEntity;
     chartOverview.drawLineChart([inputLine, scoreLine], {
-      title: `Chuỗi dữ liệu & Điểm bất thường (${currentEntity})`,
+      title: `Chuỗi dữ liệu & Điểm bất thường (${chartEntityLabel})`,
       xLabel: 'Chỉ số thời gian (t)',
     });
   }

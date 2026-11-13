@@ -70,13 +70,13 @@ def _ensure_anomaly_archive_sample(result_dir: str) -> None:
                 import shutil
                 shutil.copy2(src_file, dst_file)
 
-def calc_mean_std(vals: List[float]):
+def calc_mean_std(vals: List[float], ddof: int = 0):
     if not vals:
         return 0.0, 0.0
     mean = sum(vals) / len(vals)
-    if len(vals) == 1:
+    if len(vals) <= ddof or len(vals) == 1:
         return mean, 0.0
-    var = sum((x - mean) ** 2 for x in vals) / len(vals)
+    var = sum((x - mean) ** 2 for x in vals) / (len(vals) - ddof)
     return mean, math.sqrt(var)
 
 class RedLampIndexer:
@@ -132,7 +132,7 @@ class RedLampIndexer:
                 "aggregate_metrics": stats,
                 "single_metrics": None,
             })
-        datasets["iops"] = aiops_entities
+        datasets["iops"] = self._prepend_all_entity("iops", aiops_entities)
 
         # 3. smd
         smd_dir = os.path.join(self.result_dir, "smd")
@@ -165,7 +165,7 @@ class RedLampIndexer:
                 "aggregate_metrics": stats,
                 "single_metrics": None,
             })
-        datasets["smd"] = smd_entities
+        datasets["smd"] = self._prepend_all_entity("smd", smd_entities)
 
         # 4. msl
         msl_dir = os.path.join(self.result_dir, "msl")
@@ -196,7 +196,7 @@ class RedLampIndexer:
                 "aggregate_metrics": stats,
                 "single_metrics": None,
             })
-        datasets["msl"] = msl_entities
+        datasets["msl"] = self._prepend_all_entity("msl", msl_entities)
 
         # 5. smap
         smap_dir = os.path.join(self.result_dir, "smap")
@@ -227,7 +227,7 @@ class RedLampIndexer:
                 "aggregate_metrics": stats,
                 "single_metrics": None,
             })
-        datasets["smap"] = smap_entities
+        datasets["smap"] = self._prepend_all_entity("smap", smap_entities)
 
         # 6. anomaly_archive (250 entities)
         aa_dir = os.path.join(self.result_dir, "anomaly_archive")
@@ -268,13 +268,13 @@ class RedLampIndexer:
         self.index_cache = datasets
         return datasets
 
-    def _compute_stats(self, seed_map: Dict[int, Dict[str, float]]) -> Dict[str, float]:
+    def _compute_stats(self, seed_map: Dict[int, Dict[str, float]], ddof: int = 0) -> Dict[str, float]:
         roc = [v["vus_roc"] for v in seed_map.values()]
         pr = [v["vus_pr"] for v in seed_map.values()]
         rf = [v["rf"] for v in seed_map.values()]
-        r_m, r_s = calc_mean_std(roc)
-        p_m, p_s = calc_mean_std(pr)
-        f_m, f_s = calc_mean_std(rf)
+        r_m, r_s = calc_mean_std(roc, ddof=ddof)
+        p_m, p_s = calc_mean_std(pr, ddof=ddof)
+        f_m, f_s = calc_mean_std(rf, ddof=ddof)
         return {
             "vus_roc_mean": r_m,
             "vus_roc_std": r_s,
@@ -283,6 +283,50 @@ class RedLampIndexer:
             "rf_mean": f_m,
             "rf_std": f_s,
         }
+
+    def _prepend_all_entity(self, dataset: str, entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not entities:
+            return entities
+        valid_ents = [e for e in entities if e.get("per_seed_metrics")]
+        num_ents = len(valid_ents) if valid_ents else len(entities)
+        all_per_seed: Dict[int, Dict[str, float]] = {}
+        for s in range(5):
+            rocs = [e["per_seed_metrics"][s]["vus_roc"] for e in valid_ents if s in e["per_seed_metrics"]]
+            prs = [e["per_seed_metrics"][s]["vus_pr"] for e in valid_ents if s in e["per_seed_metrics"]]
+            rfs = [e["per_seed_metrics"][s]["rf"] for e in valid_ents if s in e["per_seed_metrics"]]
+            if rocs:
+                all_per_seed[s] = {
+                    "vus_roc": sum(rocs) / len(rocs),
+                    "vus_pr": sum(prs) / len(prs),
+                    "rf": sum(rfs) / len(rfs),
+                }
+        all_stats = self._compute_stats(all_per_seed, ddof=1)
+        for e in entities:
+            e["dataset_aggregate_metrics"] = all_stats
+            e["num_entities"] = num_ents
+
+        rep = entities[0]
+        all_entry = {
+            "dataset": dataset,
+            "entity": "ALL",
+            "display_name": f"ALL (Trung bình cả {num_ents} thực thể)",
+            "representative_entity": rep["entity"],
+            "num_entities": num_ents,
+            "seeds": [0, 1, 2, 3, 4],
+            "default_seed": 0,
+            "n_features": rep["n_features"],
+            "window_size": rep["window_size"],
+            "window_step": rep["window_step"],
+            "embedding_dim": rep["embedding_dim"],
+            "has_model": rep["has_model"],
+            "model_path": rep["model_path"],
+            "is_multi_seed": True,
+            "per_seed_metrics": all_per_seed,
+            "aggregate_metrics": all_stats,
+            "dataset_aggregate_metrics": all_stats,
+            "single_metrics": None,
+        }
+        return [all_entry] + entities
 
     def _parse_seeds_csv(self, path: str) -> Dict[str, Dict[int, Dict[str, float]]]:
         res: Dict[str, Dict[int, Dict[str, float]]] = {}
