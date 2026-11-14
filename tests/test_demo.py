@@ -62,6 +62,21 @@ def test_api_entity_endpoint():
     assert data_aa["meta"]["has_model"] is True
     assert data_aa["meta"]["single_metrics"]["vus_roc"] > 0.8
 
+    # Verify seed-specific model_rel_path, n_params, train_mode, and FAA excluded classes
+    resp_s0 = client.get("/api/entity?dataset=smd&entity=machine-1-2&seed=0").json()
+    resp_s1 = client.get("/api/entity?dataset=smd&entity=machine-1-2&seed=1").json()
+    assert resp_s0["meta"]["model_rel_path"].endswith("/0/bestmodel.pkl")
+    assert resp_s1["meta"]["model_rel_path"].endswith("/1/bestmodel.pkl")
+    assert resp_s0["meta"]["n_params"] == 1115042
+    assert resp_s0["meta"]["train_mode"] == "per_entity"
+
+    resp_msl = client.get("/api/entity?dataset=msl&entity=C-1&seed=0").json()
+    assert resp_msl["meta"]["train_mode"] == "shared"
+    assert resp_msl["meta"]["n_params"] == 1125939
+
+    resp_iops = client.get("/api/entity?dataset=iops&entity=ALL&seed=0").json()
+    assert "speedup" in resp_iops["detail"]["faa_excluded_classes"]
+
 
 def test_api_series_peak_preserving_indices():
     resp = client.get("/api/series?dataset=smd&entity=machine-1-1&seed=0&feature=0")
@@ -137,6 +152,14 @@ def test_explain_endpoint_and_sentences():
         words = exp_str.split()
         assert len(words) <= 20, f"Step {i+1} explanation exceeds 20 words: '{exp_str}' (words: {len(words)})"
     assert "mse_target" in data
+    assert "mask_info" in data
+    m_info = data["mask_info"]
+    assert m_info["total_cells"] == 38 * 100
+    assert m_info["masked_cells_target"] > 0
+    assert m_info["masked_cells_normal"] == 0
+    assert m_info["mse_target_masked"] < data["mse_target"]
+    assert set(m_info["mask_step_target"]).issubset({0, 1})
+    assert len(m_info["mask_step_target"]) == 100
     assert "conv_shapes" in data
     assert len(data["embedding"]) == 128
     assert len(data["classes_target"]) == 12
@@ -201,4 +224,55 @@ def test_numerical_accuracy_against_saved_test_output():
         # Saved MSE vs calculated MSE must be within small tolerance (< 1e-4)
         diff = abs(calc_mse - saved_mse)
         assert diff < 1e-4, f"Dataset {ds} entity {ent} MSE mismatch at t={t}: calc={calc_mse}, saved={saved_mse}, diff={diff}"
+
+
+def test_clean_tab3_normal_and_unit_spike_across_five_datasets():
+    """Verify Tab 3 baseline (Mẫu chuẩn) is normal and [0, 1] spike (D1..D5=1) is anomalous across all 5 datasets."""
+    cases = [
+        ("smd", "ALL", 0),
+        ("smd", "machine-1-1", 0),
+        ("iops", "KPI-05f10d3a-239c-3bef-9bdc-a2feeb0037aa", 0),
+        ("msl", "C-1", 0),
+        ("smap", "A-1", 0),
+        ("anomaly_archive", "001", 0),
+    ]
+    for ds, ent, seed in cases:
+        ent_resp = client.get(f"/api/entity?dataset={ds}&entity={ent}&seed={seed}").json()
+        detail = ent_resp["detail"]
+        n_feat = ent_resp["meta"]["n_features"]
+        assert abs(detail["default_threshold"] - detail["threshold_3std"]) < 1e-7
+        normal_pt = detail["normal_point"]
+        assert len(normal_pt) == n_feat
+
+        # 1. Baseline normal_point must be BÌNH THƯỜNG and never show 0.0% prob
+        res_norm = client.post("/api/predict_point", json={
+            "dataset": ds,
+            "entity": ent,
+            "seed": seed,
+            "point": normal_pt,
+            "context_type": "normal_window",
+        }).json()
+        assert res_norm["is_anomaly"] is False, f"{ds}/{ent} normal_point should be normal, got {res_norm['raw_combined']} vs {res_norm['threshold']}"
+        assert res_norm["conclusion"] == "BÌNH THƯỜNG"
+        assert res_norm["predicted_group"]["prob"] > 0.90
+
+        # 2. Spike preset inside [0, 1] (D1..D5 = 1 or 0 if baseline >= 0.5) must be BẤT THƯỜNG
+        spike_pt = list(normal_pt)
+        k = min(5, n_feat)
+        for idx in range(k):
+            spike_pt[idx] = 0.0 if normal_pt[idx] >= 0.5 else 1.0
+
+        res_spike = client.post("/api/predict_point", json={
+            "dataset": ds,
+            "entity": ent,
+            "seed": seed,
+            "point": spike_pt,
+            "context_type": "normal_window",
+        }).json()
+        assert res_spike["is_anomaly"] is True, f"{ds}/{ent} [0,1] spike should be anomaly, got {res_spike['raw_combined']} vs {res_spike['threshold']}"
+        assert res_spike["conclusion"] == "BẤT THƯỜNG"
+        if ds == "smd":
+            assert res_spike["predicted_group"]["name"].lower() == "spike"
+            assert res_spike["predicted_group"]["prob"] > 0.95
+
 

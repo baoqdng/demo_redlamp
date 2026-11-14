@@ -275,21 +275,26 @@ class RedLampEngine:
         # Raw combined score: (mse + ce_score) / 2
         raw_score = (mse + ce_score) / 2.0
 
-        # Percentile thresholds on raw scores
+        # Statistical threshold (mean + 3*std as in REDLAMP paper evaluate.py) + percentiles
+        th_3std = float(np.mean(raw_score) + 3.0 * np.std(raw_score))
         th_995 = float(np.percentile(raw_score, 99.5))
         th_990 = float(np.percentile(raw_score, 99.0))
         th_950 = float(np.percentile(raw_score, 95.0))
 
         # Find peak anomaly window and normal window
         max_idx = int(np.argmax(anomaly_score))
-        # Find a clean normal window (e.g. at 20th percentile)
+        # Find a clean normal window (middle of lowest-score region)
         low_score_indices = np.where(anomaly_score < np.percentile(anomaly_score, 10))[0]
         normal_idx = int(low_score_indices[len(low_score_indices) // 2]) if len(low_score_indices) > 0 else 0
 
-        # Statistics of features
+        # Statistics of features & clean normal reference point
         feat_min = np.min(inp_last, axis=0).tolist()
         feat_max = np.max(inp_last, axis=0).tolist()
         feat_median = np.median(inp_last, axis=0).tolist()
+        if input_3d is not None:
+            normal_point = input_3d[normal_idx, -1, :].tolist()
+        else:
+            normal_point = inp_last[normal_idx].tolist()
 
         data_dict = {
             "test_dir": test_dir,
@@ -303,12 +308,14 @@ class RedLampEngine:
             "indices": indices.tolist(),
             "mean_label": mean_label.tolist(),
             "raw_score": raw_score,
+            "threshold_3std": th_3std,
             "threshold_995": th_995,
             "threshold_990": th_990,
             "threshold_950": th_950,
-            "default_threshold": th_995,
+            "default_threshold": th_3std,
             "max_anomaly_idx": max_idx,
             "normal_idx": normal_idx,
+            "normal_point": normal_point,
             "feat_min": feat_min,
             "feat_max": feat_max,
             "feat_median": feat_median,
@@ -340,7 +347,7 @@ class RedLampEngine:
         entity: str,
         seed: int,
         point: List[float],
-        context_type: str = "sample_last",
+        context_type: str = "normal_window",
         custom_history: Optional[List[List[float]]] = None,
         threshold_override: Optional[float] = None,
     ) -> Dict[str, Any]:
@@ -350,7 +357,10 @@ class RedLampEngine:
         D = params.n_features
         pt = np.array(point, dtype=np.float32).reshape(1, D)
 
-        if context_type == "sample_last":
+        if context_type == "normal_window":
+            win_norm = self.get_window(data_dict, data_dict["normal_idx"])
+            context = win_norm[:-1, :]
+        elif context_type == "sample_last":
             # Last 99 points from entity
             if data_dict["input_3d"] is not None:
                 context = data_dict["input_3d"][-1, 1:, :]
@@ -370,8 +380,8 @@ class RedLampEngine:
                 pad = np.tile(c_arr[0:1], (99 - len(c_arr), 1))
                 context = np.vstack([pad, c_arr])
         else:
-            median = np.array(data_dict["feat_median"], dtype=np.float32).reshape(1, D)
-            context = np.tile(median, (99, 1))
+            win_norm = self.get_window(data_dict, data_dict["normal_idx"])
+            context = win_norm[:-1, :]
 
         window = np.vstack([context, pt]) # (100, D)
         window_tensor = torch.tensor(window, dtype=torch.float32).unsqueeze(0)
@@ -402,11 +412,17 @@ class RedLampEngine:
         allowed_classes.sort(key=lambda x: x["prob"], reverse=True)
         top3 = allowed_classes[:3]
 
-        # Determine winner pseudo anomaly group
+        # Determine winner pseudo anomaly group (truthful argmax when below threshold)
         if is_anomaly:
             winner_idx = allowed_classes[0]["index"] if allowed_classes else int(np.argmax(pred_probs))
+            reason_text = f"Đạt xác suất cao nhất ({pred_probs[winner_idx]*100:.1f}%) trong các lớp bất thường hợp lệ"
         else:
-            winner_idx = 0
+            winner_idx = int(np.argmax(pred_probs))
+            reason_text = (
+                "Tín hiệu bám sát quy luật vận hành ổn định của thực thể."
+                if winner_idx == 0
+                else f"Biến động cục bộ nghiêng về {PSEUDO_ANOMALY_INFO[winner_idx]['name']} ({pred_probs[winner_idx]*100:.1f}%), nhưng tổng điểm chưa vượt ngưỡng μ + 3σ."
+            )
         winner_meta = PSEUDO_ANOMALY_INFO[winner_idx]
         predicted_group = {
             "index": winner_idx,
@@ -415,10 +431,7 @@ class RedLampEngine:
             "desc_vi": winner_meta["desc_vi"],
             "prob": float(pred_probs[winner_idx]),
             "is_anomaly": is_anomaly,
-            "reason": (
-                f"Đạt xác suất cao nhất ({pred_probs[winner_idx]*100:.1f}%) trong các lớp bất thường hợp lệ"
-                if is_anomaly else "Điểm kết hợp thô nằm dưới ngưỡng phân vị 99,5%, tín hiệu ổn định."
-            ),
+            "reason": reason_text,
         }
 
         # All 12 classes summary
@@ -471,7 +484,7 @@ class RedLampEngine:
             "custom_window": window.tolist(),
             "reconstructed": reconstructed.tolist(),
             "new_point": point,
-            "explanation": f"MSE đạt {raw_mse:.4f}, điểm phân loại {raw_ce:.4f}, ngưỡng {th:.4f} (phân vị 99,5).",
+            "explanation": f"MSE đạt {raw_mse:.4f}, điểm phân loại {raw_ce:.4f}, ngưỡng μ+3σ = {th:.4f}.",
         }
 
     def explain(
@@ -618,11 +631,22 @@ class RedLampEngine:
         for k, v in activations_target.items():
             conv_heatmap_summary[k] = np.mean(np.abs(v[0]), axis=1).tolist()[:32]
 
-        # Step 3: Decoder error per point
-        err_sq_target = np.mean((win_target - rec_target) ** 2, axis=1).tolist()
-        err_sq_normal = np.mean((win_normal - rec_normal) ** 2, axis=1).tolist()
-        mse_target = float(np.mean(err_sq_target))
-        mse_normal = float(np.mean(err_sq_normal))
+        # Step 3: Decoder error per point & Binary Anomaly Mask (meta.py: inputs*anomaly_mask, predicted*anomaly_mask)
+        sq_target_mat = (win_target - rec_target) ** 2
+        sq_normal_mat = (win_normal - rec_normal) ** 2
+        err_sq_target = np.mean(sq_target_mat, axis=1).tolist()
+        err_sq_normal = np.mean(sq_normal_mat, axis=1).tolist()
+        mse_target = float(np.mean(sq_target_mat))
+        mse_normal = float(np.mean(sq_normal_mat))
+
+        # Binary keep-mask (1 = normal cell kept in MSE, 0 = anomalous cell masked out in Eq. 2)
+        cell_th = np.maximum(np.max(sq_normal_mat, axis=0, keepdims=True) * 1.25, 0.01)
+        keep_mask_target = (sq_target_mat <= cell_th).astype(np.float32)
+        keep_mask_normal = (sq_normal_mat <= cell_th).astype(np.float32)
+        err_sq_target_masked = np.mean(sq_target_mat * keep_mask_target, axis=1).tolist()
+        err_sq_normal_masked = np.mean(sq_normal_mat * keep_mask_normal, axis=1).tolist()
+        mse_target_masked = float(np.mean(sq_target_mat * keep_mask_target))
+        mse_normal_masked = float(np.mean(sq_normal_mat * keep_mask_normal))
 
         # Raw scores for target
         raw_mse_val = mse_target
@@ -636,7 +660,7 @@ class RedLampEngine:
             allowed_cand = [j for j in range(12) if j not in indices]
             winner_idx = max(allowed_cand, key=lambda j: probs_target[j]) if allowed_cand else int(np.argmax(probs_target))
         else:
-            winner_idx = 0
+            winner_idx = int(np.argmax(probs_target))
         winner_meta = PSEUDO_ANOMALY_INFO[winner_idx]
 
         # Step 4: Classifier
@@ -669,29 +693,66 @@ class RedLampEngine:
         plot_feat_idx = 0
         if is_custom_point and params.n_features > 1:
             last_sq_err = (win_target[-1] - rec_target[-1]) ** 2
-            if float(np.max(last_sq_err)) > 1e-4:
-                plot_feat_idx = int(np.argmax(last_sq_err))
+            jump = np.abs(win_target[-1] - win_target[-2]) if len(win_target) >= 2 else np.zeros(params.n_features)
+            hist_std = np.std(win_target[:-1], axis=0) if len(win_target) >= 2 else np.zeros(params.n_features)
+            if float(np.max(jump)) > 1e-2:
+                cand = np.where(jump >= 0.5 * float(np.max(jump)))[0]
+                active_cand = cand[hist_std[cand] > 1e-3]
+                if len(active_cand) > 0:
+                    plot_feat_idx = int(active_cand[np.argmax(hist_std[active_cand])])
+                else:
+                    plot_feat_idx = int(cand[np.argmax(last_sq_err[cand])])
+            else:
+                top_k = min(5, params.n_features)
+                if float(np.max(hist_std[:top_k])) > 1e-3:
+                    plot_feat_idx = int(np.argmax(hist_std[:top_k]))
+                else:
+                    plot_feat_idx = int(np.argmax(hist_std))
+        elif not is_custom_point and params.n_features > 1:
+            ch_mse = np.mean(sq_target_mat, axis=0)
+            if float(ch_mse[0]) < 0.01 and float(np.max(ch_mse)) > float(ch_mse[0]) * 3.0:
+                plot_feat_idx = int(np.argmax(ch_mse))
+
+        total_cells = int(keep_mask_target.size)
+        masked_cells_target = int(np.sum(keep_mask_target == 0))
+        kept_cells_target = total_cells - masked_cells_target
+        masked_cells_normal = int(np.sum(keep_mask_normal == 0))
+        mask_info = {
+            "total_cells": total_cells,
+            "masked_cells_target": masked_cells_target,
+            "kept_cells_target": kept_cells_target,
+            "masked_cells_normal": masked_cells_normal,
+            "mask_step_target": keep_mask_target[:, plot_feat_idx].astype(int).tolist(),
+            "mask_step_normal": keep_mask_normal[:, plot_feat_idx].astype(int).tolist(),
+            "masked_ch_count_target": np.sum(keep_mask_target == 0, axis=1).astype(int).tolist(),
+            "masked_ch_count_normal": np.sum(keep_mask_normal == 0, axis=1).astype(int).tolist(),
+            "err_sq_target_masked": err_sq_target_masked,
+            "err_sq_normal_masked": err_sq_normal_masked,
+            "mse_target_masked": mse_target_masked,
+            "mse_normal_masked": mse_normal_masked,
+        }
 
         if is_custom_point:
             # Custom point mode: 100 points (1..100)
             time_axis = list(range(1, 101))
             input_slice = win_target[:, plot_feat_idx].tolist()
-            # Step 5 slice: last 50 points of dataset + custom point
-            history_len = min(50, len(data_dict["raw_score"]))
-            score_slice_rec = data_dict["mse"][-history_len:].tolist() + [raw_mse_val]
-            l_sub = np.copy(data_dict["pred_label"][-history_len:])
+            # Step 5 slice: 50 clean reference steps around normal_t + custom point
+            hist_end = max(1, min(len(data_dict["raw_score"]), normal_t))
+            hist_start = max(0, hist_end - 50)
+            score_slice_rec = data_dict["mse"][hist_start:hist_end].tolist() + [raw_mse_val]
+            l_sub = np.copy(data_dict["pred_label"][hist_start:hist_end])
             l_sub[:, list(indices)] = 0
             score_slice_ce = np.sum(l_sub, axis=1).tolist() + [raw_ce_val]
-            raw_slice_combined = data_dict["raw_score"][-history_len:].tolist() + [raw_comb_val]
-            score_slice_final = data_dict["anomaly_score"][-history_len:].tolist() + [min(1.0, raw_comb_val / max(1e-5, th * 1.5))]
+            raw_slice_combined = data_dict["raw_score"][hist_start:hist_end].tolist() + [raw_comb_val]
+            score_slice_final = data_dict["anomaly_score"][hist_start:hist_end].tolist() + [min(1.0, raw_comb_val / max(1e-5, th * 1.5))]
             final_rel_val = score_slice_final[-1]
 
             explanations = [
                 f"Input Window 100 bước với điểm mới tại t=100 được đưa vào phân tích.",
-                f"Bottleneck Embedding 128 chiều nén cửa sổ, L2 Distance Δz = {emb_l2_dist:.2f} (Cosine = {emb_cosine:.2f}).",
+                f"Encoder nén cửa sổ 100 bước qua 4 khối 1D-CNN thành Bottleneck Embedding z (128 chiều).",
                 f"Sai số tái tạo Decoder tại điểm nạp MSE = {mse_target:.4f} (chuẩn đối chứng: {mse_normal:.4f}).",
                 f"Classifier phân loại điểm nạp vào lớp '{winner_meta['name_vi']}' với xác suất {probs_target[winner_idx]*100:.1f}%.",
-                f"Combined Score = {raw_comb_val:.3f} ({'vượt ngưỡng ' + f'{th:.3f} -> Bất thường' if is_anomaly else 'dưới ngưỡng ' + f'{th:.3f} -> Bình thường'})."
+                f"Combined Score = {raw_comb_val:.3f} ({'vượt ngưỡng μ+3σ ' + f'{th:.3f} -> Bất thường' if is_anomaly else 'dưới ngưỡng μ+3σ ' + f'{th:.3f} -> Bình thường'})."
             ]
         else:
             # Entity series mode
@@ -710,10 +771,10 @@ class RedLampEngine:
 
             explanations = [
                 f"Input Window 100 bước tại vị trí t={t} được tô sáng trên chuỗi dữ liệu gốc.",
-                f"Bottleneck Embedding 128 chiều tại t={t}, L2 Distance so với chuẩn Δz = {emb_l2_dist:.2f} (Cosine = {emb_cosine:.2f}).",
+                f"Encoder nén cửa sổ tại t={t} thành Bottleneck Embedding z (128 chiều), đối chiếu chuẩn t={normal_t}.",
                 f"Sai số tái tạo Decoder MSE = {mse_target:.4f} ở cửa sổ khảo sát (cửa sổ chuẩn: {mse_normal:.4f}).",
                 f"Classifier dự đoán xác suất 12 lớp Pseudo-Anomaly, lọc bỏ lớp Normal và FAA (> 0.05).",
-                f"Combined Score = ({raw_mse_val:.3f} + {raw_ce_val:.3f})/2 = {raw_comb_val:.3f}, {'vượt' if is_anomaly else 'dưới'} ngưỡng P99.5 ({th:.3f})."
+                f"Combined Score = ({raw_mse_val:.3f} + {raw_ce_val:.3f})/2 = {raw_comb_val:.3f}, {'vượt' if is_anomaly else 'dưới'} ngưỡng μ+3σ ({th:.3f})."
             ]
 
         return {
@@ -742,6 +803,7 @@ class RedLampEngine:
             "err_sq_normal": err_sq_normal,
             "mse_target": mse_target,
             "mse_normal": mse_normal,
+            "mask_info": mask_info,
             "conv_shapes": conv_shapes,
             "conv_heatmap": conv_heatmap_summary,
             "embedding": embedding_target,

@@ -16,6 +16,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let lastPredictedPoint = null;
   let lastPredictedResult = null;
   let isCustomPointExplain = false;
+  let isDecoderMaskEnabled = false;
 
   // Charts
   let chartOverview = null;
@@ -335,10 +336,6 @@ document.addEventListener('DOMContentLoaded', () => {
   // 2. Load Entity Details: /api/entity
   async function onEntityChanged() {
     if (!currentEntity) return;
-    const st = document.getElementById('cfg-status');
-    if (st) {
-      st.innerHTML = '<span class="badge badge-loading">⏳ Đang tải &amp; nạp mô hình...</span>';
-    }
     showLoading(
       `Đang nạp thực thể ${currentEntity} (Seed ${currentSeed})...`,
       'Đang tải dữ liệu chuỗi thời gian, checkpoint mô hình ConvAEC và tính toán giải thích'
@@ -348,17 +345,6 @@ document.addEventListener('DOMContentLoaded', () => {
       currentEntityMeta = data.meta;
       currentEntityDetail = data.detail;
 
-      // Update Config UI
-      document.getElementById('cfg-features').textContent = currentEntityMeta.n_features;
-      document.getElementById('cfg-window').textContent = currentEntityMeta.window_size;
-      document.getElementById('cfg-step').textContent = currentEntityMeta.window_step;
-      document.getElementById('cfg-embedding').textContent = currentEntityMeta.embedding_dim;
-      const baseModelPath = currentEntityMeta.model_path || '(Chưa tải mô hình cục bộ)';
-      document.getElementById('cfg-path').textContent =
-        (currentEntity === 'ALL' && currentEntityMeta.representative_entity)
-          ? `${baseModelPath} (Mẫu đại diện: ${currentEntityMeta.representative_entity})`
-          : baseModelPath;
-
       // Update 3 Metrics
       updateMetricsDisplay();
 
@@ -366,33 +352,26 @@ document.addEventListener('DOMContentLoaded', () => {
       setupPointInputs(currentEntityMeta.n_features);
       setupOverviewControls(currentEntityMeta.n_features);
 
-      // Load Overview Chart & Explain Data
+      // Load Overview Chart, Explain Data & Baseline Tab 3 Prediction
       if (currentEntityMeta.has_model) {
         if (isAllComparisonMode()) {
           renderOverviewChart();
-          await loadExplainData(null, false);
+          await Promise.all([
+            loadExplainData(null, false),
+            runPointPrediction(false),
+          ]);
         } else {
           await Promise.all([
             loadSeriesOverview(),
             loadExplainData(null, false),
+            runPointPrediction(false),
           ]);
         }
-        if (st) {
-          st.innerHTML = '<span class="badge badge-success">Model đã nạp trong bộ nhớ</span>';
-        }
-      } else {
-        if (isAllComparisonMode()) {
-          renderOverviewChart();
-        }
-        if (st) {
-          st.innerHTML = '<span class="badge badge-danger">Chỉ có chỉ số kiểm nghiệm</span>';
-        }
+      } else if (isAllComparisonMode()) {
+        renderOverviewChart();
       }
     } catch (e) {
       console.error(e);
-      if (st) {
-        st.innerHTML = '<span class="badge badge-danger">Lỗi nạp dữ liệu</span>';
-      }
     } finally {
       hideLoading();
     }
@@ -807,12 +786,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const domCh = (domFeats && domFeats[idx]) ? ` (tại D${domFeats[idx]})` : '';
         const isAnom = (rawVal !== null && th !== undefined) ? (rawVal > th) : (relVal > 0.5);
         const pill = isAnom
-          ? '<span class="tt-pill anom">⚠️ Bất thường (&gt; P99.5)</span>'
+          ? '<span class="tt-pill anom">⚠️ Bất thường (&gt; μ + 3σ)</span>'
           : '<span class="tt-pill ok">✓ Bình thường</span>';
         const rawRow = (rawVal !== null && th !== undefined)
           ? `
             <div class="tt-row">
-              <span class="tt-label">Raw Combined / P99.5</span>
+              <span class="tt-label">Raw Combined / μ + 3σ</span>
               <span class="tt-val">${rawVal.toFixed(4)} / ${th.toFixed(4)}</span>
             </div>
           `
@@ -834,138 +813,202 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // 4. Manual Point Prediction
+  // 4. Manual Point Prediction (Clean Presentation Mode)
+  let baselinePoint = [];
+
+  function getNormalBaseline(nFeatures) {
+    const src = (currentEntityDetail && Array.isArray(currentEntityDetail.normal_point) && currentEntityDetail.normal_point.length === nFeatures)
+      ? currentEntityDetail.normal_point
+      : (currentEntityDetail && Array.isArray(currentEntityDetail.feat_median) && currentEntityDetail.feat_median.length === nFeatures)
+        ? currentEntityDetail.feat_median
+        : Array(nFeatures).fill(0.1);
+    const digits = nFeatures === 1 ? 4 : 3;
+    return src.map(v => parseFloat(Number(v).toFixed(digits)));
+  }
+
+  function updateModifiedHighlights() {
+    const badgeMod = document.getElementById('badge-modified-count');
+    let modCount = 0;
+    if (baselinePoint.length === 1) {
+      const inp = document.getElementById('pt-feat-0');
+      if (inp) {
+        const val = parseFloat(inp.value || '0');
+        const isMod = Math.abs(val - baselinePoint[0]) > 1.5e-3;
+        inp.classList.toggle('pt-modified', isMod);
+        if (isMod) modCount = 1;
+      }
+    } else {
+      document.querySelectorAll('.pt-feat').forEach(inp => {
+        const idx = parseInt(inp.dataset.idx, 10);
+        const val = parseFloat(inp.value || '0');
+        const base = baselinePoint[idx] ?? 0;
+        const isMod = Math.abs(val - base) > 1.5e-3;
+        inp.classList.toggle('pt-modified', isMod);
+        if (inp.parentElement) inp.parentElement.classList.toggle('modified', isMod);
+        if (isMod) modCount++;
+      });
+    }
+    if (badgeMod) {
+      if (modCount > 0) {
+        badgeMod.style.display = 'inline-block';
+        badgeMod.textContent = `Đã sửa ${modCount} kênh`;
+      } else {
+        badgeMod.style.display = 'none';
+      }
+    }
+  }
+
   function setupPointInputs(nFeatures) {
     const container = document.getElementById('container-point-inputs');
     container.innerHTML = '';
-    
-    // Check if 1 feature or multi
+    baselinePoint = getNormalBaseline(nFeatures);
+
     if (nFeatures === 1) {
       const inp = document.createElement('input');
       inp.type = 'number';
       inp.step = 'any';
-      inp.className = 'form-control';
+      inp.className = 'form-control pt-feat';
       inp.id = 'pt-feat-0';
-      inp.placeholder = 'Ví dụ: 0.35';
-      if (currentEntityDetail && currentEntityDetail.feat_median) {
-        inp.value = parseFloat(currentEntityDetail.feat_median[0].toFixed(4));
-      } else {
-        inp.value = 0.5;
-      }
+      inp.placeholder = 'Ví dụ: 1.0 (miền [0, 1])';
+      inp.value = baselinePoint[0];
+      inp.addEventListener('input', updateModifiedHighlights);
+      inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') runPointPrediction(true);
+      });
       container.appendChild(inp);
     } else {
       const grid = document.createElement('div');
-      grid.style.display = 'grid';
-      grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(72px, 1fr))';
-      grid.style.gap = '6px';
-      grid.style.padding = '6px';
-      grid.style.border = '1px solid #e2e8f0';
-      grid.style.borderRadius = '6px';
+      grid.className = 'pt-grid';
+      if (nFeatures <= 12) {
+        grid.style.gridTemplateColumns = 'repeat(4, minmax(0, 1fr))';
+      }
 
       for (let i = 0; i < nFeatures; i++) {
         const wrap = document.createElement('div');
-        wrap.innerHTML = `<small style="font-size:12px; font-weight:700; color:#334155;">D${i+1}</small>`;
+        wrap.className = 'pt-feat-wrap';
+        wrap.innerHTML = `<small>D${i + 1}</small>`;
         const inp = document.createElement('input');
         inp.type = 'number';
         inp.step = 'any';
+        if (i === 0) inp.id = 'pt-feat-0';
         inp.className = 'form-control pt-feat';
         inp.dataset.idx = i;
-        inp.style.fontSize = '14px';
-        inp.style.height = '32px';
-        inp.style.padding = '4px 6px';
-        if (currentEntityDetail && currentEntityDetail.feat_median) {
-          inp.value = parseFloat(currentEntityDetail.feat_median[i].toFixed(3));
-        } else {
-          inp.value = 0.1;
-        }
+        inp.value = baselinePoint[i];
+        inp.title = `Kênh D${i + 1} · Giá trị chuẩn: ${baselinePoint[i]}`;
+        inp.addEventListener('input', updateModifiedHighlights);
+        inp.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') runPointPrediction(true);
+        });
         wrap.appendChild(inp);
         grid.appendChild(wrap);
       }
       container.appendChild(grid);
     }
 
-    // Update threshold slider
-    const slider = document.getElementById('slider-threshold');
-    const valTh = document.getElementById('val-threshold');
-    if (currentEntityDetail && currentEntityDetail.default_threshold) {
-      const th = currentEntityDetail.default_threshold;
-      slider.min = (th * 0.1).toFixed(4);
-      slider.max = (th * 3.0).toFixed(4);
-      slider.step = ((slider.max - slider.min) / 100).toFixed(5);
-      slider.value = th.toFixed(4);
-      valTh.textContent = th.toFixed(4) + ' (P99.5)';
+    updateModifiedHighlights();
+
+    // Setup optional chart channel selector
+    const selChartFeat = document.getElementById('select-predict-chart-feat');
+    if (selChartFeat) {
+      if (nFeatures > 1) {
+        selChartFeat.style.display = 'inline-block';
+        let optsHtml = '<option value="auto">Tự động (kênh nổi bật)</option>';
+        for (let i = 0; i < nFeatures; i++) {
+          optsHtml += `<option value="${i}">Kênh D${i + 1}</option>`;
+        }
+        selChartFeat.innerHTML = optsHtml;
+        selChartFeat.value = 'auto';
+        selChartFeat.onchange = () => {
+          if (lastPredictedResult) {
+            renderPredictWindowChart(
+              lastPredictedResult.window_input,
+              lastPredictedResult.reconstructed,
+              lastPredictedResult.raw_mse,
+              lastPredictedResult.is_anomaly
+            );
+          }
+        };
+      } else {
+        selChartFeat.style.display = 'none';
+        selChartFeat.value = 'auto';
+      }
     }
 
-    slider.oninput = (e) => {
-      valTh.textContent = parseFloat(e.target.value).toFixed(4);
-    };
+    const btnSample = document.getElementById('btn-fill-point-sample');
+    if (btnSample) {
+      btnSample.onclick = () => {
+        if (nFeatures === 1) {
+          const inp = document.getElementById('pt-feat-0');
+          if (inp) inp.value = baselinePoint[0];
+        } else {
+          document.querySelectorAll('.pt-feat').forEach(inp => {
+            const idx = parseInt(inp.dataset.idx, 10);
+            inp.value = baselinePoint[idx];
+          });
+        }
+        if (selChartFeat) selChartFeat.value = 'auto';
+        updateModifiedHighlights();
+        if (currentEntityMeta && currentEntityMeta.has_model) {
+          runPointPrediction(true);
+        }
+      };
+    }
 
-    document.getElementById('btn-reset-threshold').onclick = () => {
-      if (currentEntityDetail && currentEntityDetail.default_threshold) {
-        slider.value = currentEntityDetail.default_threshold.toFixed(4);
-        valTh.textContent = slider.value + ' (P99.5)';
-      }
-    };
-
-    document.getElementById('btn-fill-point-sample').onclick = () => {
-      if (!currentEntityDetail || !currentEntityDetail.feat_median) return;
-      if (nFeatures === 1) {
-        document.getElementById('pt-feat-0').value = parseFloat(currentEntityDetail.feat_median[0].toFixed(4));
-      } else {
-        const inputs = document.querySelectorAll('.pt-feat');
-        inputs.forEach(inp => {
-          const idx = parseInt(inp.dataset.idx, 10);
-          inp.value = parseFloat(currentEntityDetail.feat_median[idx].toFixed(3));
-        });
-      }
-    };
+    const btnSpike = document.getElementById('btn-fill-point-spike');
+    if (btnSpike) {
+      btnSpike.onclick = () => {
+        const spikeCount = Math.min(5, nFeatures);
+        if (nFeatures === 1) {
+          const inp = document.getElementById('pt-feat-0');
+          if (inp) inp.value = baselinePoint[0] >= 0.5 ? 0 : 1;
+        } else {
+          document.querySelectorAll('.pt-feat').forEach(inp => {
+            const idx = parseInt(inp.dataset.idx, 10);
+            if (idx < spikeCount) {
+              inp.value = baselinePoint[idx] >= 0.5 ? 0 : 1;
+            } else {
+              inp.value = baselinePoint[idx];
+            }
+          });
+        }
+        if (selChartFeat) selChartFeat.value = 'auto';
+        updateModifiedHighlights();
+        if (currentEntityMeta && currentEntityMeta.has_model) {
+          runPointPrediction(true);
+        }
+      };
+    }
   }
 
-  // Radio toggle for context
-  document.querySelectorAll('input[name="context-src"]').forEach(radio => {
-    radio.addEventListener('change', (e) => {
-      const customGroup = document.getElementById('group-custom-history');
-      if (e.target.value === 'custom') {
-        customGroup.style.display = 'block';
-      } else {
-        customGroup.style.display = 'none';
-      }
-    });
-  });
-
-  // Run Prediction
-  document.getElementById('btn-run-predict').addEventListener('click', async () => {
-    if (!currentEntityMeta.has_model) {
-      alert('Entity này chưa có checkpoint model được tải về.');
+  async function runPointPrediction(showOverlay = true) {
+    if (!currentEntityMeta || !currentEntityMeta.has_model) {
+      if (showOverlay) alert('Entity này chưa có checkpoint model được tải về.');
       return;
     }
 
     const nFeatures = currentEntityMeta.n_features;
     let point = [];
     if (nFeatures === 1) {
-      point = [parseFloat(document.getElementById('pt-feat-0').value || '0')];
+      const inp0 = document.getElementById('pt-feat-0');
+      point = [parseFloat((inp0 && inp0.value) || '0')];
     } else {
-      const inputs = document.querySelectorAll('.pt-feat');
-      inputs.forEach(inp => point.push(parseFloat(inp.value || '0')));
+      document.querySelectorAll('.pt-feat').forEach(inp => {
+        point.push(parseFloat(inp.value || '0'));
+      });
     }
 
-    const contextType = document.querySelector('input[name="context-src"]:checked').value;
-    let customHistory = null;
-    if (contextType === 'custom') {
-      const rawText = document.getElementById('textarea-custom-history').value.trim();
-      const lines = rawText.split('\n');
-      customHistory = lines.map(line => line.split(/[,\s]+/).map(v => parseFloat(v)).filter(v => !isNaN(v)));
-    }
-
-    const thOverride = parseFloat(document.getElementById('slider-threshold').value);
     const btnPredict = document.getElementById('btn-run-predict');
-    const origBtnText = btnPredict.textContent;
-    btnPredict.disabled = true;
-    btnPredict.textContent = '⏳ Đang suy luận bất thường...';
-    showLoading(
-      'Đang dự đoán điểm dữ liệu mới...',
-      `Đang chạy cửa sổ 100 điểm qua ConvAEC cho ${currentEntity} (Seed ${currentSeed})`
-    );
+    const origBtnText = btnPredict ? btnPredict.textContent : '⚡ Dự đoán bất thường';
+    if (btnPredict) {
+      btnPredict.disabled = true;
+      if (showOverlay) btnPredict.textContent = '⏳ Đang suy luận bất thường...';
+    }
+    if (showOverlay) {
+      showLoading(
+        'Đang dự đoán điểm dữ liệu mới...',
+        `Đang chạy cửa sổ 100 điểm qua ConvAEC cho ${currentEntity} (Seed ${currentSeed})`
+      );
+    }
 
     try {
       const res = await fetchJSON('/api/predict_point', {
@@ -976,55 +1019,36 @@ document.addEventListener('DOMContentLoaded', () => {
           entity: currentEntity,
           seed: currentSeed,
           point: point,
-          context_type: contextType,
-          custom_history: customHistory,
-          threshold_override: thOverride,
+          context_type: 'normal_window',
         }),
       });
 
-      // Display results
+      const boxConc = document.getElementById('box-conclusion');
       const badge = document.getElementById('badge-conclusion');
       const desc = document.getElementById('desc-conclusion');
+      const cardComb = document.getElementById('card-raw-comb');
+      const cardPseudo = document.getElementById('card-pseudo-winner');
+
       if (res.is_anomaly) {
+        if (boxConc) boxConc.className = 'prediction-conclusion-box is-abnormal';
         badge.className = 'conclusion-badge abnormal';
-        badge.textContent = 'BẤT THƯỜNG';
-        desc.textContent = `Raw Combined (${res.raw_combined.toFixed(4)}) > Threshold (${res.threshold.toFixed(4)})`;
+        badge.textContent = '⚠️ BẤT THƯỜNG';
+        desc.textContent = `Combined (${res.raw_combined.toFixed(4)}) > Ngưỡng μ+3σ (${res.threshold.toFixed(4)})`;
+        if (cardComb) cardComb.className = 'score-card highlight is-abnormal';
+        if (cardPseudo) cardPseudo.className = 'pseudo-anomaly-card is-abnormal';
       } else {
+        if (boxConc) boxConc.className = 'prediction-conclusion-box is-normal';
         badge.className = 'conclusion-badge normal';
-        badge.textContent = 'BÌNH THƯỜNG';
-        desc.textContent = `Raw Combined (${res.raw_combined.toFixed(4)}) < Threshold (${res.threshold.toFixed(4)})`;
+        badge.textContent = '✓ BÌNH THƯỜNG';
+        desc.textContent = `Combined (${res.raw_combined.toFixed(4)}) < Ngưỡng μ+3σ (${res.threshold.toFixed(4)})`;
+        if (cardComb) cardComb.className = 'score-card highlight is-normal';
+        if (cardPseudo) cardPseudo.className = 'pseudo-anomaly-card is-normal';
       }
 
       document.getElementById('res-raw-mse').textContent = res.raw_mse.toFixed(4);
       document.getElementById('res-raw-ce').textContent = res.raw_ce.toFixed(4);
       document.getElementById('res-raw-comb').textContent = res.raw_combined.toFixed(4);
       document.getElementById('res-threshold').textContent = res.threshold.toFixed(4);
-
-      // Top 3 classes
-      const top3Container = document.getElementById('list-top3');
-      top3Container.innerHTML = '';
-      res.top3.forEach(c => {
-        const pct = (c.prob * 100).toFixed(1);
-        const item = document.createElement('div');
-        item.className = 'top3-item';
-        item.innerHTML = `
-          <div class="top3-item-info">
-            <strong>${c.name_vi || c.label}</strong>
-            <div class="prob-bar" style="width: ${Math.max(5, pct * 2)}px;"></div>
-          </div>
-          <div class="top3-item-pct"><strong>${pct}%</strong></div>
-        `;
-        top3Container.appendChild(item);
-      });
-
-      // Excluded classes
-      const exContainer = document.getElementById('table-excluded-classes');
-      let exHTML = '<table class="info-table"><tr><th>Lớp</th><th>Lý do lọc bởi FAA</th></tr>';
-      res.excluded_classes.forEach(ex => {
-        exHTML += `<tr><td><strong>${ex.label}</strong></td><td>${ex.reason}</td></tr>`;
-      });
-      exHTML += '</table>';
-      exContainer.innerHTML = exHTML;
 
       // Save last prediction for Explainable Sync
       lastPredictedWindow = res.custom_window || res.window_input;
@@ -1040,12 +1064,12 @@ document.addEventListener('DOMContentLoaded', () => {
           pseudoBadge.style.background = '#dc2626';
           pseudoBadge.style.color = '#ffffff';
           pseudoBadge.textContent = `${pg.name_vi} (${(pg.prob * 100).toFixed(1)}%)`;
-          pseudoDesc.innerHTML = `<strong>Hình thái:</strong> ${pg.desc_vi}<br><span style="color:#b91c1c; font-weight:600;">Cơ sở:</span> ${pg.reason}`;
+          pseudoDesc.innerHTML = `<strong>Đặc trưng:</strong> ${pg.desc_vi}<br><span style="color:#b91c1c; font-weight:600;">Cơ sở:</span> ${pg.reason}`;
         } else {
           pseudoBadge.style.background = '#16a34a';
           pseudoBadge.style.color = '#ffffff';
           pseudoBadge.textContent = `${pg.name_vi} (${(pg.prob * 100).toFixed(1)}%)`;
-          pseudoDesc.innerHTML = `<strong>Trạng thái:</strong> ${pg.desc_vi}<br><span style="color:#15803d;">Cơ sở:</span> ${pg.reason}`;
+          pseudoDesc.innerHTML = `<strong>Đặc trưng:</strong> ${pg.desc_vi}<br><span style="color:#15803d; font-weight:600;">Cơ sở:</span> ${pg.reason}`;
         }
       }
 
@@ -1053,18 +1077,25 @@ document.addEventListener('DOMContentLoaded', () => {
       const btnSync = document.getElementById('btn-sync-explain-point');
       if (btnSync) {
         btnSync.disabled = false;
-        btnSync.style.boxShadow = '0 0 0 3px rgba(37, 99, 235, 0.35)';
       }
 
       // Draw Predict window reconstruction chart
-      renderPredictWindowChart(res.window_input, res.reconstructed, res.raw_mse);
+      renderPredictWindowChart(res.window_input, res.reconstructed, res.raw_mse, res.is_anomaly);
     } catch (e) {
-      alert('Lỗi dự đoán: ' + e.message);
+      if (showOverlay) alert('Lỗi dự đoán: ' + e.message);
+      else console.error('Silent predict failed:', e);
     } finally {
-      btnPredict.disabled = false;
-      btnPredict.textContent = origBtnText;
-      hideLoading();
+      if (btnPredict) {
+        btnPredict.disabled = false;
+        btnPredict.textContent = origBtnText;
+      }
+      if (showOverlay) hideLoading();
     }
+  }
+
+  // Run Prediction Button
+  document.getElementById('btn-run-predict').addEventListener('click', () => {
+    runPointPrediction(true);
   });
 
   // Sync Button Listener
@@ -1116,14 +1147,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (!banner) return;
     if (isCustomPointExplain) {
-      banner.style.background = '#fef2f2';
-      banner.style.borderColor = '#fecaca';
-      modeText.style.color = '#991b1b';
-      modeText.innerHTML = `Điểm nạp: <strong>t = 100</strong>`;
-      modeText.title = 'Đang giải thích điểm nạp thủ công tại t = 100';
+      const isAnom = !!(explainData && explainData.winner_group && explainData.winner_group.is_anomaly);
+      banner.style.background = isAnom ? '#fef2f2' : '#f0fdf4';
+      banner.style.borderColor = isAnom ? '#fecaca' : '#86efac';
+      modeText.style.color = isAnom ? '#991b1b' : '#166534';
+      modeText.innerHTML = `Điểm nạp Tab 3: <strong>t = 100</strong>`;
+      modeText.title = 'Đang giải thích điểm nạp thủ công từ Tab 3 tại t = 100';
       if (modeBadge) {
         modeBadge.style.display = 'inline-block';
-        modeBadge.style.background = '#dc2626';
+        modeBadge.style.background = isAnom ? '#dc2626' : '#16a34a';
         modeBadge.textContent = explainData?.winner_group?.name_vi || 'Điểm nạp mới';
       }
       if (btnBack) btnBack.style.display = 'inline-block';
@@ -1146,28 +1178,76 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function renderPredictWindowChart(windowIn, windowRec, mseVal) {
+  function renderPredictWindowChart(windowIn, windowRec, mseVal, isAnomaly = false) {
     if (!chartPredict || !windowIn) return;
     const nFeat = (windowIn[0] && windowIn[0].length) ? windowIn[0].length : 1;
+    const selChartFeat = document.getElementById('select-predict-chart-feat');
     let featIdx = 0;
-    if (nFeat > 1 && windowRec && windowRec.length === windowIn.length) {
+
+    if (nFeat > 1 && selChartFeat && selChartFeat.value !== 'auto') {
+      featIdx = Math.max(0, Math.min(nFeat - 1, parseInt(selChartFeat.value, 10) || 0));
+    } else if (nFeat > 1 && windowRec && windowRec.length === windowIn.length) {
       const lastRow = windowIn.length - 1;
-      let maxErr = -1;
+      const prevRow = Math.max(0, lastRow - 1);
+      const histLen = Math.max(1, lastRow);
+      let maxJump = -1;
+      const jumps = [];
+      const sqErrs = [];
+      const histStds = [];
+
       for (let f = 0; f < nFeat; f++) {
-        const diff = (windowIn[lastRow][f] ?? 0) - (windowRec[lastRow][f] ?? 0);
-        const sq = diff * diff;
-        if (sq > maxErr) {
-          maxErr = sq;
-          featIdx = f;
+        const j = Math.abs((windowIn[lastRow][f] ?? 0) - (windowIn[prevRow][f] ?? 0));
+        const d = (windowIn[lastRow][f] ?? 0) - (windowRec[lastRow][f] ?? 0);
+        jumps.push(j);
+        sqErrs.push(d * d);
+        if (j > maxJump) maxJump = j;
+
+        let sum = 0;
+        for (let r = 0; r < histLen; r++) sum += (windowIn[r][f] ?? 0);
+        const mean = sum / histLen;
+        let varSum = 0;
+        for (let r = 0; r < histLen; r++) {
+          const dv = (windowIn[r][f] ?? 0) - mean;
+          varSum += dv * dv;
+        }
+        histStds.push(Math.sqrt(varSum / histLen));
+      }
+
+      if (maxJump > 1e-2) {
+        // Among jumped channels, strongly prefer active oscillating channels (std > 1e-3) over dead-flat 0.000 channels (like D5 on SMD)
+        const cand = [];
+        for (let f = 0; f < nFeat; f++) {
+          if (jumps[f] >= 0.5 * maxJump) cand.push(f);
+        }
+        const activeCand = cand.filter(f => histStds[f] > 1e-3);
+        if (activeCand.length > 0) {
+          featIdx = activeCand.reduce((best, f) => (histStds[f] > histStds[best] ? f : best), activeCand[0]);
+        } else if (cand.length > 0) {
+          featIdx = cand.reduce((best, f) => (sqErrs[f] > sqErrs[best] ? f : best), cand[0]);
+        }
+      } else {
+        // Normal baseline: pick the liveliest channel in the first 5 channels (so Mẫu chuẩn & ⚡ Mẫu đột biến stay on the same clear waveform!)
+        const topK = Math.min(5, nFeat);
+        let bestTop = 0;
+        for (let f = 1; f < topK; f++) {
+          if (histStds[f] > histStds[bestTop]) bestTop = f;
+        }
+        if (histStds[bestTop] > 1e-3) {
+          featIdx = bestTop;
+        } else {
+          for (let f = 0; f < nFeat; f++) {
+            if (histStds[f] > histStds[featIdx]) featIdx = f;
+          }
         }
       }
-      if (maxErr <= 1e-4) featIdx = 0;
     }
+
     const origData = windowIn.map(p => p[featIdx] ?? p[0]);
     const recData = windowRec.map(p => p[featIdx] ?? p[0]);
     const featTag = nFeat > 1 ? ` — D${featIdx + 1}` : '';
     const xSteps = Array.from({ length: origData.length }, (_, i) => i + 1);
     const lastIdx = origData.length - 1;
+    const accentColor = isAnomaly ? '#dc2626' : '#16a34a';
 
     chartPredict.drawLineChart([
       { label: `Đầu vào (kèm t=100${featTag})`, data: origData, color: '#334155', width: 2 },
@@ -1176,16 +1256,21 @@ document.addEventListener('DOMContentLoaded', () => {
       title: `Cửa sổ 100 điểm & chuỗi tái tạo${featTag}`,
       xLabel: 'Thời gian trong cửa sổ (1 -> 100)',
       xValues: xSteps,
+      fillBetween: true,
+      fillBetweenColor: isAnomaly ? 'rgba(220, 38, 38, 0.15)' : 'rgba(22, 163, 74, 0.08)',
       badgeText: `MSE = ${mseVal.toFixed(4)}`,
-      pointMarker: lastIdx >= 0 ? { index: lastIdx, value: origData[lastIdx], label: 'Điểm mới (t=100)' } : undefined,
+      badgeColor: accentColor,
+      pointMarker: lastIdx >= 0
+        ? { index: lastIdx, value: origData[lastIdx], label: 'Điểm mới (t=100)', color: accentColor }
+        : undefined,
       tooltipFormatter: (idx) => {
         const stepNum = idx + 1;
         const vOrig = origData[idx] ?? 0;
         const vRec = recData[idx] ?? 0;
         const sqErr = (vOrig - vRec) * (vOrig - vRec);
         const pill = idx === lastIdx
-          ? '<span class="tt-pill anom">Điểm nạp mới (t=100)</span>'
-          : '<span class="tt-pill muted">Ngữ cảnh lịch sử</span>';
+          ? `<span class="tt-pill ${isAnomaly ? 'anom' : 'ok'}">Điểm nạp mới (t=100)</span>`
+          : '<span class="tt-pill muted">Ngữ cảnh chuẩn</span>';
         return `
           <div class="tt-header"><span>Bước t = ${stepNum} / ${origData.length}</span>${pill}</div>
           <div class="tt-row">
@@ -1384,13 +1469,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const timeLen = n.time_len || 1;
         const timePct = Math.max(5, Math.round((timeLen / maxTime) * 100));
 
-        let energyBadgeHTML = '';
-        if (typeof n.energy === 'number') {
-          const ratio = (n.energy_normal && n.energy_normal > 1e-6) ? (n.energy / n.energy_normal) : 1.0;
-          const isHot = ratio > 1.25;
-          energyBadgeHTML = `<span class="energy-pill ${isHot ? 'hot' : ''}" title="Năng lượng kích hoạt trung bình |h| (Chuẩn: ${(n.energy_normal || 0).toFixed(3)})">E=${n.energy.toFixed(3)}</span>`;
-        }
-
         const div = document.createElement('div');
         div.className = `pipeline-node role-${role}`;
         div.innerHTML = `
@@ -1401,7 +1479,6 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="node-top-row">
               <span class="layer-name">${n.layer}</span>
               <div class="node-badges">
-                ${energyBadgeHTML}
                 <span class="layer-shape">${n.shape}</span>
               </div>
             </div>
@@ -1415,24 +1492,6 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
         pipelineEl.appendChild(div);
       });
-
-      // Update KPI Badges on Right Header
-      const distBadge = document.getElementById('badge-emb-dist');
-      const cosBadge = document.getElementById('badge-emb-cos');
-      const l2Dist = typeof explainData.embedding_l2_dist === 'number' ? explainData.embedding_l2_dist : 0;
-      const cosSim = typeof explainData.embedding_cosine === 'number' ? explainData.embedding_cosine : 1;
-      const isAnomWin = explainData.winner_group && explainData.winner_group.is_anomaly;
-
-      if (distBadge) {
-        distBadge.textContent = `Δz = ${l2Dist.toFixed(2)}`;
-        distBadge.title = 'Khoảng cách L2 so với Vector Embedding cửa sổ chuẩn';
-        distBadge.style.background = isAnomWin ? '#fee2e2' : (l2Dist < 0.01 ? '#dcfce7' : '#f1f5f9');
-        distBadge.style.color = isAnomWin ? '#b91c1c' : (l2Dist < 0.01 ? '#15803d' : '#0f172a');
-      }
-      if (cosBadge) {
-        cosBadge.textContent = `Cosine = ${cosSim.toFixed(3)}`;
-        cosBadge.title = 'Độ tương đồng Cosine với cửa sổ chuẩn';
-      }
 
       // Render 128-D Signed Latent Embedding (Dual Heatmap + Zero-Centered Diverging Bars)
       const targetTag = explainData.is_custom_point ? 'Điểm nạp' : `t=${explainData.t}`;
@@ -1450,12 +1509,57 @@ document.addEventListener('DOMContentLoaded', () => {
       );
       document.getElementById('exp-text-2').textContent = explainData.explanations[1];
     } else if (currentStep === 2) {
-      // Step 3: Decoder Target vs Normal (Synced Crosshair)
+      // Step 3: Decoder Target vs Normal + Interactive Binary Anomaly Mask {0, 1}
       const isCustom = explainData.is_custom_point;
-      const lastIdx = explainData.win_target.length - 1;
-      const winSteps = Array.from({ length: explainData.win_target.length }, (_, i) => i + 1);
+      const winLen = explainData.win_target.length;
+      const lastIdx = winLen - 1;
+      const winSteps = Array.from({ length: winLen }, (_, i) => i + 1);
+      const nFeat = explainData.n_features || 1;
       const fIdx = explainData.plot_feature_idx ?? 0;
-      const featSuffix = (isCustom && explainData.n_features > 1) ? ` — D${fIdx + 1}` : '';
+      const featSuffix = nFeat > 1 ? ` — D${fIdx + 1}` : '';
+
+      const mInfo = explainData.mask_info || {};
+      const totalCells = mInfo.total_cells || (winLen * nFeat);
+      const maskedCells = mInfo.masked_cells_target ?? 0;
+      const keptCells = mInfo.kept_cells_target ?? (totalCells - maskedCells);
+      const maskStepTarget = Array.isArray(mInfo.mask_step_target) ? mInfo.mask_step_target : Array(winLen).fill(1);
+      const maskStepNormal = Array.isArray(mInfo.mask_step_normal) ? mInfo.mask_step_normal : Array(winLen).fill(1);
+      const maskedChCountTarget = Array.isArray(mInfo.masked_ch_count_target) ? mInfo.masked_ch_count_target : Array(winLen).fill(0);
+      const maskedChCountNormal = Array.isArray(mInfo.masked_ch_count_normal) ? mInfo.masked_ch_count_normal : Array(winLen).fill(0);
+      const errTargetMaskedArr = Array.isArray(mInfo.err_sq_target_masked) ? mInfo.err_sq_target_masked : explainData.err_sq_target;
+      const mseTargetUnmasked = explainData.mse_target;
+      const mseTargetMasked = mInfo.mse_target_masked ?? mseTargetUnmasked;
+      const mseNormalUnmasked = explainData.mse_normal;
+      const mseNormalMasked = mInfo.mse_normal_masked ?? mseNormalUnmasked;
+
+      // Sync Toggle Button & Card visual state
+      const btnMaskToggle = document.getElementById('btn-toggle-decoder-mask');
+      const lblMaskToggle = document.getElementById('lbl-toggle-decoder-mask');
+      const maskCardEl = document.getElementById('decoder-mask-card');
+      if (btnMaskToggle) btnMaskToggle.classList.toggle('mask-on', isDecoderMaskEnabled);
+      if (maskCardEl) maskCardEl.classList.toggle('mask-on', isDecoderMaskEnabled);
+      if (lblMaskToggle) {
+        lblMaskToggle.textContent = isDecoderMaskEnabled
+          ? '🎭 Anomaly Mask: BẬT (Che lỗi = 0)'
+          : '🎭 Anomaly Mask: TẮT (Test)';
+      }
+
+      // Sync Mask Matrix {0, 1} Inspector Chips
+      const chipShape = document.getElementById('mask-chip-shape');
+      const chipKeep = document.getElementById('mask-chip-keep');
+      const chipZero = document.getElementById('mask-chip-zero');
+      if (chipShape) {
+        chipShape.textContent = `Ma trận {0,1}: ${nFeat}×${winLen} = ${totalCells.toLocaleString()} ô`;
+      }
+      if (isDecoderMaskEnabled) {
+        const keepPct = ((keptCells / Math.max(1, totalCells)) * 100).toFixed(1);
+        const zeroPct = ((maskedCells / Math.max(1, totalCells)) * 100).toFixed(1);
+        if (chipKeep) chipKeep.textContent = `Mask = 1 (Giữ): ${keptCells.toLocaleString()} ô (${keepPct}%)`;
+        if (chipZero) chipZero.textContent = `Mask = 0 (Che ×0): ${maskedCells.toLocaleString()} ô (${zeroPct}%)`;
+      } else {
+        if (chipKeep) chipKeep.textContent = `Mask = 1 (Mở toàn bộ): ${totalCells.toLocaleString()} ô (100%)`;
+        if (chipZero) chipZero.textContent = `Mask = 0 (Che ×0): 0 ô (0%)`;
+      }
 
       const makeStep3Tooltip = (isTargetChart) => (idx) => {
         const stepNum = idx + 1;
@@ -1465,21 +1569,42 @@ document.addEventListener('DOMContentLoaded', () => {
         const origVal = isTargetChart ? explainData.win_target[idx] : explainData.win_normal[idx];
         const recVal = isTargetChart ? explainData.rec_target[idx] : explainData.rec_normal[idx];
         const errT = explainData.err_sq_target[idx] ?? 0;
+        const errTM = errTargetMaskedArr[idx] ?? errT;
         const errN = explainData.err_sq_normal[idx] ?? 0;
+        const stepBit = isTargetChart ? maskStepTarget[idx] : maskStepNormal[idx];
+        const chMaskedCnt = isTargetChart ? (maskedChCountTarget[idx] ?? 0) : (maskedChCountNormal[idx] ?? 0);
+
+        const maskValStr = !isDecoderMaskEnabled
+          ? '1 (Đang TẮT Mask — mở 100%)'
+          : (stepBit === 0
+            ? `<span style="color:#d97706;font-weight:800">0 (Che ×0${nFeat > 1 ? ` · ${chMaskedCnt}/${nFeat} kênh` : ''})</span>`
+            : `<span style="color:#16a34a;font-weight:800">1 (Giữ ×1${chMaskedCnt > 0 ? ` · che ${chMaskedCnt}/${nFeat} kênh khác` : ''})</span>`);
+
+        const mseRowHtml = isDecoderMaskEnabled
+          ? `<div class="tt-row">
+               <span class="tt-label">MSE bước này (Sau che Mask)</span>
+               <span class="tt-val">${errT.toFixed(4)} &rarr; <strong>${errTM.toFixed(5)}</strong></span>
+             </div>`
+          : `<div class="tt-row">
+               <span class="tt-label">MSE bước này (Khảo sát)</span>
+               <span class="tt-val">${errT.toFixed(5)}</span>
+             </div>`;
+
         return `
           <div class="tt-header"><span>Bước cửa sổ ${stepNum}/100</span><span class="tt-pill ${isTargetChart ? 'anom' : 'info'}">${pillLabel}</span></div>
           <div class="tt-row">
-            <span class="tt-label"><span class="tt-dot" style="background:#334155"></span>Gốc</span>
+            <span class="tt-label"><span class="tt-dot" style="background:#334155"></span>Gốc${featSuffix}</span>
             <span class="tt-val">${(origVal ?? 0).toFixed(4)}</span>
           </div>
           <div class="tt-row">
-            <span class="tt-label"><span class="tt-dot" style="background:#2563eb"></span>Tái tạo</span>
+            <span class="tt-label"><span class="tt-dot" style="background:#2563eb"></span>Tái tạo${featSuffix}</span>
             <span class="tt-val">${(recVal ?? 0).toFixed(4)}</span>
           </div>
           <div class="tt-row">
-            <span class="tt-label">MSE bước này (Khảo sát)</span>
-            <span class="tt-val">${errT.toFixed(5)}</span>
+            <span class="tt-label">Giá trị Mask (0 / 1)</span>
+            <span class="tt-val">${maskValStr}</span>
           </div>
+          ${mseRowHtml}
           <div class="tt-row">
             <span class="tt-label">MSE bước này (Chuẩn)</span>
             <span class="tt-val">${errN.toFixed(5)}</span>
@@ -1487,34 +1612,107 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
       };
 
+      const isStep3Anom = mseTargetUnmasked > Math.max(1e-4, mseNormalUnmasked * 2.0) || (explainData.winner_group && explainData.winner_group.is_anomaly);
+      const activeTargetMse = isDecoderMaskEnabled ? mseTargetMasked : mseTargetUnmasked;
+      const activeNormalMse = isDecoderMaskEnabled ? mseNormalMasked : mseNormalUnmasked;
+      const step3TargetColor = isDecoderMaskEnabled
+        ? '#d97706'
+        : (isStep3Anom ? '#dc2626' : '#16a34a');
+
       chartSlide3Target.drawLineChart([
-        { label: isCustom ? `Gốc (kèm t=100${featSuffix})` : 'Gốc', data: explainData.win_target, color: '#334155', width: 2 },
+        { label: isCustom ? `Gốc (kèm t=100${featSuffix})` : `Gốc${featSuffix}`, data: explainData.win_target, color: '#334155', width: 2 },
         { label: `Tái tạo${featSuffix}`, data: explainData.rec_target, color: '#2563eb', width: 2 },
       ], {
-        title: isCustom ? `Cửa sổ điểm nạp (t=100${featSuffix})` : `Cửa sổ khảo sát (t=${explainData.t})`,
+        title: isCustom ? `Cửa sổ điểm nạp (t=100${featSuffix})` : `Cửa sổ khảo sát (t=${explainData.t}${featSuffix})`,
         xLabel: 'Thời gian trong cửa sổ (1 -> 100)',
         xValues: winSteps,
         syncCharts: [chartSlide3Normal],
         tooltipFormatter: makeStep3Tooltip(true),
-        badgeText: `MSE = ${explainData.mse_target.toFixed(4)}`,
-        pointMarker: isCustom ? { index: lastIdx, value: explainData.win_target[lastIdx], label: 'Điểm nạp (t=100)' } : undefined,
+        maskStrip: {
+          enabled: isDecoderMaskEnabled,
+          stepMask: maskStepTarget,
+          maskedChCount: maskedChCountTarget,
+          nFeatures: nFeat,
+        },
+        fillBetween: true,
+        fillBetweenColor: isStep3Anom ? 'rgba(220, 38, 38, 0.16)' : 'rgba(22, 163, 74, 0.10)',
+        badgeText: isDecoderMaskEnabled
+          ? `MSE (Mask) = ${activeTargetMse.toFixed(4)}`
+          : `MSE = ${activeTargetMse.toFixed(4)}`,
+        badgeColor: step3TargetColor,
+        pointMarker: isCustom ? { index: lastIdx, value: explainData.win_target[lastIdx], label: 'Điểm nạp (t=100)', color: step3TargetColor } : undefined,
       });
-      document.getElementById('badge-mse-target').textContent = `MSE = ${explainData.mse_target.toFixed(4)}`;
+
+      const badgeMseTarget = document.getElementById('badge-mse-target');
+      if (badgeMseTarget) {
+        if (isDecoderMaskEnabled) {
+          badgeMseTarget.textContent = `MSE (Mask) = ${activeTargetMse.toFixed(4)} (Gốc: ${mseTargetUnmasked.toFixed(4)})`;
+          badgeMseTarget.style.background = '#fef3c7';
+          badgeMseTarget.style.color = '#92400e';
+        } else {
+          badgeMseTarget.textContent = `MSE = ${mseTargetUnmasked.toFixed(4)}`;
+          badgeMseTarget.style.background = isStep3Anom ? '#fee2e2' : '#dcfce7';
+          badgeMseTarget.style.color = isStep3Anom ? '#b91c1c' : '#15803d';
+        }
+      }
 
       chartSlide3Normal.drawLineChart([
-        { label: 'Gốc', data: explainData.win_normal, color: '#334155', width: 2 },
-        { label: 'Tái tạo', data: explainData.rec_normal, color: '#2563eb', width: 2 },
+        { label: `Gốc${featSuffix}`, data: explainData.win_normal, color: '#334155', width: 2 },
+        { label: `Tái tạo${featSuffix}`, data: explainData.rec_normal, color: '#2563eb', width: 2 },
       ], {
-        title: `Cửa sổ chuẩn đối chứng (t=${explainData.normal_t})`,
+        title: `Cửa sổ chuẩn đối chứng (t=${explainData.normal_t}${featSuffix})`,
         xLabel: 'Thời gian trong cửa sổ (1 -> 100)',
         xValues: winSteps,
         syncCharts: [chartSlide3Target],
         tooltipFormatter: makeStep3Tooltip(false),
-        badgeText: `MSE = ${explainData.mse_normal.toFixed(4)}`,
+        maskStrip: {
+          enabled: isDecoderMaskEnabled,
+          stepMask: maskStepNormal,
+          maskedChCount: maskedChCountNormal,
+          nFeatures: nFeat,
+        },
+        fillBetween: true,
+        fillBetweenColor: 'rgba(22, 163, 74, 0.10)',
+        badgeText: isDecoderMaskEnabled
+          ? `MSE (Mask) = ${activeNormalMse.toFixed(4)}`
+          : `MSE = ${activeNormalMse.toFixed(4)}`,
+        badgeColor: '#16a34a',
       });
-      document.getElementById('badge-mse-normal').textContent = `MSE = ${explainData.mse_normal.toFixed(4)}`;
 
-      document.getElementById('exp-text-3').textContent = explainData.explanations[2];
+      const badgeMseNormal = document.getElementById('badge-mse-normal');
+      if (badgeMseNormal) {
+        badgeMseNormal.textContent = isDecoderMaskEnabled
+          ? `MSE (Mask) = ${activeNormalMse.toFixed(4)}`
+          : `MSE = ${mseNormalUnmasked.toFixed(4)}`;
+        badgeMseNormal.style.background = '#dcfce7';
+        badgeMseNormal.style.color = '#15803d';
+      }
+
+      const maskNoteEl = document.getElementById('decoder-mask-note');
+      const expText3El = document.getElementById('exp-text-3');
+      if (isDecoderMaskEnabled) {
+        const dropPct = mseTargetUnmasked > 1e-7
+          ? Math.max(0, ((mseTargetUnmasked - mseTargetMasked) / mseTargetUnmasked) * 100).toFixed(1)
+          : '0.0';
+        if (maskNoteEl) {
+          maskNoteEl.innerHTML = `* <strong>Đang BẬT Mask (Mô phỏng Train — meta.py):</strong> nhân <code>X &odot; Mask</code> và <code>X&#770; &odot; Mask</code> khóa ${maskedCells.toLocaleString()} ô bất thường về 0 &rArr; MSE giảm từ <strong>${mseTargetUnmasked.toFixed(4)}</strong> xuống <strong>${mseTargetMasked.toFixed(4)}</strong> (&minus;${dropPct}%), giúp Decoder chỉ học sóng chuẩn!`;
+        }
+        if (expText3El) {
+          expText3El.textContent = `Đang BẬT Anomaly Mask {0, 1}: ${maskedCells.toLocaleString()}/${totalCells.toLocaleString()} ô vượt chuẩn bị gán Mask = 0 (màn sọc vàng trên đồ thị), khóa sai số vùng lỗi về 0 và hạ MSE từ ${mseTargetUnmasked.toFixed(4)} xuống ${mseTargetMasked.toFixed(4)} (cửa sổ chuẩn giữ nguyên Mask = 1 với MSE = ${activeNormalMse.toFixed(4)}).`;
+        }
+      } else {
+        const ratio = mseNormalUnmasked > 1e-7 ? (mseTargetUnmasked / mseNormalUnmasked) : 1.0;
+        if (maskNoteEl) {
+          if (ratio >= 2.0) {
+            maskNoteEl.innerHTML = `* <strong>Đang TẮT Mask (Chế độ Test — Mask = 1 toàn bộ):</strong> mở đủ ${totalCells.toLocaleString()} ô làm lộ rõ độ lệch <strong>MSE = ${mseTargetUnmasked.toFixed(4)}</strong> (gấp <strong>${ratio.toFixed(0)}&times;</strong> chuẩn ${mseNormalUnmasked.toFixed(4)}). Nhấn nút <strong>🎭 Anomaly Mask</strong> phía trên để xem bên trong Mask {0, 1}!`;
+          } else {
+            maskNoteEl.innerHTML = `* <strong>Đang TẮT Mask (Chế độ Test — Mask = 1 toàn bộ):</strong> tính sai số trên đủ ${totalCells.toLocaleString()} ô — Khảo sát <strong>MSE = ${mseTargetUnmasked.toFixed(4)}</strong> đối chiếu Chuẩn <strong>MSE = ${mseNormalUnmasked.toFixed(4)}</strong>. Nhấn <strong>🎭 Anomaly Mask</strong> phía trên để bật thử!`;
+          }
+        }
+        if (expText3El) {
+          expText3El.textContent = explainData.explanations[2];
+        }
+      }
     } else if (currentStep === 3) {
       // Step 4: Classifier 12 Classes Target vs Normal (Synced Bar Highlight)
       const isCustom = explainData.is_custom_point;
@@ -1593,22 +1791,26 @@ document.addEventListener('DOMContentLoaded', () => {
         ? Array.from({ length: n5 }, (_, i) => (i === n5 - 1 ? 't=100 (Điểm nạp)' : `Lịch sử -${n5 - 1 - i}`))
         : explainData.time_slice;
       const curSliceIdx = !isCustom ? explainData.time_slice.indexOf(explainData.t) : (n5 - 1);
+      const isTargetAnom = explainData.raw_combined > explainData.threshold;
+      const step5Accent = isTargetAnom ? '#dc2626' : '#16a34a';
 
       chartSlide5.drawLineChart([
         { label: 'Raw MSE', data: explainData.score_rec_slice, color: '#334155', width: 2 },
         { label: 'Raw CE', data: explainData.score_ce_slice, color: '#2563eb', width: 2 },
         { label: 'Raw Combined Score', data: explainData.raw_comb_slice, color: '#dc2626', width: 2.5 },
       ], {
-        title: isCustom ? 'Raw Combined Score của điểm nạp so với lịch sử' : 'Biến thiên Raw MSE, Raw CE & Raw Combined Score',
-        xLabel: isCustom ? '50 bước lịch sử cuối & điểm nạp mới' : 'Chỉ số thời gian (t)',
+        title: isCustom ? 'Raw Combined Score của điểm nạp so với ngữ cảnh chuẩn' : 'Biến thiên Raw MSE, Raw CE & Raw Combined Score',
+        xLabel: isCustom ? '50 bước chuẩn đối chứng & điểm nạp mới' : 'Chỉ số thời gian (t)',
         xValues: step5X,
         thresholdLine: explainData.threshold,
         badgeText: `Combined = ${explainData.raw_combined.toFixed(3)}`,
+        badgeColor: step5Accent,
         pointMarker: curSliceIdx >= 0
           ? {
               index: curSliceIdx,
               value: explainData.raw_comb_slice[curSliceIdx],
               label: isCustom ? 'Điểm nạp mới' : `t=${explainData.t}`,
+              color: step5Accent,
             }
           : undefined,
         onPointClick: !isCustom ? (_idx, realT) => loadExplainData(realT, true) : undefined,
@@ -1639,7 +1841,7 @@ document.addEventListener('DOMContentLoaded', () => {
               <span class="tt-val">${rComb.toFixed(4)}</span>
             </div>
             <div class="tt-row">
-              <span class="tt-label">Threshold P99.5</span>
+              <span class="tt-label">Ngưỡng μ + 3σ</span>
               <span class="tt-val">${explainData.threshold.toFixed(4)}</span>
             </div>
             ${hint}
@@ -1649,14 +1851,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Update Formula Card
       const eqEl = document.getElementById('formula-equation');
-      const conclusionBadge = explainData.raw_combined > explainData.threshold 
+      const conclusionBadge = isTargetAnom
         ? '<span style="color:#dc2626; font-weight:bold;">BẤT THƯỜNG</span>' 
         : '<span style="color:#16a34a; font-weight:bold;">BÌNH THƯỜNG</span>';
       eqEl.innerHTML = `
         (MSE + CE) / 2
         = (${explainData.raw_mse.toFixed(4)} + ${explainData.raw_ce.toFixed(4)}) / 2 
         = <strong>${explainData.raw_combined.toFixed(4)}</strong>
-        (P99.5 = ${explainData.threshold.toFixed(4)} &rArr; ${conclusionBadge})
+        (Ngưỡng μ + 3σ = ${explainData.threshold.toFixed(4)} &rArr; ${conclusionBadge})
       `;
 
       document.getElementById('exp-text-5').textContent = explainData.explanations[4];
@@ -1680,12 +1882,18 @@ document.addEventListener('DOMContentLoaded', () => {
         if (targetId === 'tab-pretrain') renderOverviewChart();
         else if (targetId === 'tab-predict') {
           if (lastPredictedResult) {
-            renderPredictWindowChart(lastPredictedResult.window_input, lastPredictedResult.reconstructed, lastPredictedResult.raw_mse);
+            renderPredictWindowChart(
+              lastPredictedResult.window_input,
+              lastPredictedResult.reconstructed,
+              lastPredictedResult.raw_mse,
+              lastPredictedResult.is_anomaly
+            );
           } else if (explainData && explainData.win_normal) {
             renderPredictWindowChart(
               explainData.win_normal.map(v => [v]),
               explainData.rec_normal.map(v => [v]),
-              explainData.mse_normal
+              explainData.mse_normal,
+              false
             );
           }
         }
@@ -1702,11 +1910,25 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!activeTab) return;
     if (activeTab.id === 'tab-pretrain') renderOverviewChart();
     else if (activeTab.id === 'tab-predict' && lastPredictedResult) {
-      renderPredictWindowChart(lastPredictedResult.window_input, lastPredictedResult.reconstructed, lastPredictedResult.raw_mse);
+      renderPredictWindowChart(
+        lastPredictedResult.window_input,
+        lastPredictedResult.reconstructed,
+        lastPredictedResult.raw_mse,
+        lastPredictedResult.is_anomaly
+      );
     } else if (activeTab.id === 'tab-explain') renderCurrentStep();
   });
 
   // Export PNG buttons (use live chart instances so offscreen snapshot is preserved)
+  const btnToggleMask = document.getElementById('btn-toggle-decoder-mask');
+  if (btnToggleMask) {
+    btnToggleMask.addEventListener('click', () => {
+      isDecoderMaskEnabled = !isDecoderMaskEnabled;
+      SimpleCanvasChart.hideTooltip();
+      renderCurrentStep();
+    });
+  }
+
   document.getElementById('btn-export-overview').onclick = () => chartOverview && chartOverview.exportPNG(`overview_${currentEntity}.png`);
   document.getElementById('btn-export-predict-chart').onclick = () => chartPredict && chartPredict.exportPNG(`predict_${currentEntity}.png`);
   const exportChartMap = {

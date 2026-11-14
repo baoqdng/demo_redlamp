@@ -493,15 +493,23 @@ class SimpleCanvasChart {
     const scale = Math.min(1.0, Math.max(0.72, cssH / 300));
     const fontStack = "'Segoe UI', Roboto, Arial, sans-serif";
 
-    const FONT_TITLE = `bold ${Math.round(18 * scale * dpr)}px ${fontStack}`;
-    const FONT_LABEL = `600 ${Math.round(14 * scale * dpr)}px ${fontStack}`;
+    const FONT_TITLE = `bold ${Math.round(17 * scale * dpr)}px ${fontStack}`;
+    const FONT_LABEL = `600 ${Math.round(13.5 * scale * dpr)}px ${fontStack}`;
     const FONT_XTICK = `600 ${Math.round(12 * scale * dpr)}px ${fontStack}`;
-    const FONT_BADGE = `bold ${Math.round(15 * scale * dpr)}px ${fontStack}`;
+    const FONT_BADGE = `bold ${Math.round(14.5 * scale * dpr)}px ${fontStack}`;
+
+    const visibleLegendLines = lines.slice(0, 3).filter(l => l && l.label);
+    const hasLegend = visibleLegendLines.length > 0;
+
+    const hasMaskStrip = Boolean(options.maskStrip && Array.isArray(options.maskStrip.stepMask) && options.maskStrip.stepMask.length > 0);
+    const maskStripExtra = hasMaskStrip ? Math.round(16 * scale * dpr) : 0;
 
     const padLeft = Math.round(64 * scale * dpr);
     const padRight = Math.round(26 * scale * dpr);
-    const padTop = options.title ? Math.round(44 * scale * dpr) : Math.round(26 * scale * dpr);
-    const padBottom = Math.round(50 * scale * dpr);
+    const padTop = (options.title
+      ? Math.round((hasLegend ? 55 : 42) * scale * dpr)
+      : Math.round((hasLegend ? 32 : 22) * scale * dpr)) + maskStripExtra;
+    const padBottom = Math.round(48 * scale * dpr);
 
     const plotW = this.width - padLeft - padRight;
     const plotH = this.height - padTop - padBottom;
@@ -651,26 +659,130 @@ class SimpleCanvasChart {
       }
     }
 
-    // 3. Threshold Line if specified (Dashed Red Line)
-    if (options.thresholdLine !== undefined) {
-      const ty = getY(options.thresholdLine);
-      ctx.strokeStyle = '#dc2626';
-      ctx.lineWidth = 2.5 * dpr;
-      ctx.setLineDash([6 * dpr, 6 * dpr]);
-      ctx.beginPath();
-      ctx.moveTo(padLeft, ty);
-      ctx.lineTo(padLeft + plotW, ty);
-      ctx.stroke();
-      ctx.setLineDash([]);
+    // 2.7. Optional Binary Anomaly Mask Strip (top barcode 0/1) & Masked Curtain Overlay
+    const maskCfg = hasMaskStrip ? options.maskStrip : null;
+    const isMaskActive = Boolean(maskCfg && maskCfg.enabled);
+    if (maskCfg) {
+      const stripArr = maskCfg.stepMask;
+      const chCounts = maskCfg.maskedChCount || [];
+      const sLen = stripArr.length;
+      const stripH = Math.round(9 * scale * dpr);
+      const stripY = padTop - stripH - Math.round(4 * scale * dpr);
 
-      ctx.fillStyle = '#dc2626';
-      ctx.font = FONT_BADGE;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'alphabetic';
-      ctx.fillText(`Threshold: ${options.thresholdLine.toFixed(3)}`, padLeft + 10 * dpr, ty - 8 * dpr);
+      ctx.save();
+      ctx.font = `bold ${Math.round(11 * scale * dpr)}px ${fontStack}`;
+      ctx.fillStyle = isMaskActive ? '#b45309' : '#64748b';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Mask:', padLeft - 8 * dpr, stripY + stripH / 2);
+
+      for (let i = 0; i < sLen; i++) {
+        const xStart = sLen > 1
+          ? (i === 0 ? padLeft : (getX(i - 1) + getX(i)) / 2)
+          : padLeft;
+        const xEnd = sLen > 1
+          ? (i === sLen - 1 ? padLeft + plotW : (getX(i) + getX(i + 1)) / 2)
+          : padLeft + plotW;
+        let cellColor = '#bbf7d0'; // Mask OFF: all 1s (open)
+        if (isMaskActive) {
+          if (stripArr[i] === 0) cellColor = '#f59e0b'; // 0 = masked out on this channel
+          else if ((chCounts[i] || 0) > 0) cellColor = '#fde68a'; // 0 on other channels
+          else cellColor = '#22c55e'; // 1 = kept across all channels
+        }
+        ctx.fillStyle = cellColor;
+        ctx.fillRect(xStart, stripY, Math.max(1, xEnd - xStart + 0.5), stripH);
+      }
+      ctx.strokeStyle = isMaskActive ? '#d97706' : '#86efac';
+      ctx.lineWidth = 1 * dpr;
+      ctx.strokeRect(padLeft, stripY, plotW, stripH);
+
+      // Draw hatched amber curtain over masked spans (stepMask[i] === 0) when Mask is ON
+      if (isMaskActive) {
+        let spanStart = -1;
+        const drawMaskedSpan = (a, b) => {
+          const sx1 = sLen > 1 ? (a === 0 ? padLeft : (getX(a - 1) + getX(a)) / 2) : padLeft;
+          const sx2 = sLen > 1 ? (b === sLen - 1 ? padLeft + plotW : (getX(b) + getX(b + 1)) / 2) : padLeft + plotW;
+          const sw = Math.max(3 * dpr, sx2 - sx1);
+          ctx.save();
+          ctx.fillStyle = 'rgba(245, 158, 11, 0.14)';
+          ctx.fillRect(sx1, padTop, sw, plotH);
+
+          // Diagonal hatch lines inside masked zone
+          ctx.beginPath();
+          ctx.rect(sx1, padTop, sw, plotH);
+          ctx.clip();
+          ctx.strokeStyle = 'rgba(217, 119, 6, 0.24)';
+          ctx.lineWidth = 1.2 * dpr;
+          const stepPx = Math.round(11 * scale * dpr);
+          for (let hx = sx1 - plotH; hx < sx2 + plotH; hx += stepPx) {
+            ctx.moveTo(hx, padTop + plotH);
+            ctx.lineTo(hx + plotH, padTop);
+          }
+          ctx.stroke();
+          ctx.restore();
+
+          ctx.save();
+          ctx.strokeStyle = 'rgba(217, 119, 6, 0.65)';
+          ctx.lineWidth = 1.3 * dpr;
+          ctx.setLineDash([4 * dpr, 3 * dpr]);
+          ctx.strokeRect(sx1, padTop, sw, plotH);
+          ctx.restore();
+        };
+
+        for (let i = 0; i < sLen; i++) {
+          if (stripArr[i] === 0) {
+            if (spanStart < 0) spanStart = i;
+          } else if (spanStart >= 0) {
+            drawMaskedSpan(spanStart, i - 1);
+            spanStart = -1;
+          }
+        }
+        if (spanStart >= 0) drawMaskedSpan(spanStart, sLen - 1);
+      }
+      ctx.restore();
     }
 
-    // 4. Draw Lines (Max 3 lines)
+    // 2.8. Optional Shaded Divergence Area Between Line 0 (Original) & Line 1 (Reconstructed)
+    if (options.fillBetween && lines.length >= 2 && lines[0].data && lines[1].data) {
+      const len = Math.min(lines[0].data.length, lines[1].data.length);
+      if (len > 1) {
+        const fillSpan = (a, b) => {
+          if (b <= a) return;
+          ctx.save();
+          ctx.fillStyle = options.fillBetweenColor || 'rgba(220, 38, 38, 0.14)';
+          ctx.beginPath();
+          for (let i = a; i <= b; i++) {
+            const x = getX(i);
+            const y = getY(lines[0].data[i]);
+            if (i === a) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          for (let i = b; i >= a; i--) {
+            ctx.lineTo(getX(i), getY(lines[1].data[i]));
+          }
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+        };
+
+        if (isMaskActive && maskCfg && Array.isArray(maskCfg.stepMask)) {
+          let segStart = -1;
+          for (let i = 0; i < len; i++) {
+            if (maskCfg.stepMask[i] !== 0) {
+              if (segStart < 0) segStart = i;
+            } else if (segStart >= 0) {
+              fillSpan(segStart, i - 1);
+              segStart = -1;
+            }
+          }
+          if (segStart >= 0) fillSpan(segStart, len - 1);
+        } else {
+          fillSpan(0, len - 1);
+        }
+      }
+    }
+
+    // 3. Draw Lines (Max 3 lines)
     lines.slice(0, 3).forEach((line) => {
       if (!line.data || line.data.length === 0) return;
       ctx.strokeStyle = line.color || '#334155';
@@ -692,13 +804,47 @@ class SimpleCanvasChart {
       ctx.setLineDash([]);
     });
 
-    // 5. Draw Title & Labels
+    // 4. Threshold Line if specified (Dashed Red Line + Opaque Pill Label)
+    if (options.thresholdLine !== undefined) {
+      const ty = getY(options.thresholdLine);
+      ctx.strokeStyle = '#dc2626';
+      ctx.lineWidth = 2.2 * dpr;
+      ctx.setLineDash([6 * dpr, 5 * dpr]);
+      ctx.beginPath();
+      ctx.moveTo(padLeft, ty);
+      ctx.lineTo(padLeft + plotW, ty);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      const thTxt = options.thresholdLabel || `Ngưỡng μ+3σ: ${options.thresholdLine.toFixed(3)}`;
+      ctx.font = `bold ${Math.round(12.5 * scale * dpr)}px ${fontStack}`;
+      const thW = ctx.measureText(thTxt).width + 12 * dpr;
+      const thH = Math.round(20 * scale * dpr);
+      const thX = padLeft + 8 * dpr;
+      const thY = Math.max(padTop + 4 * dpr, ty - thH - 4 * dpr);
+
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.93)';
+      ctx.strokeStyle = '#dc2626';
+      ctx.lineWidth = 1.3 * dpr;
+      ctx.beginPath();
+      ctx.roundRect ? ctx.roundRect(thX, thY, thW, thH, 4 * dpr) : ctx.rect(thX, thY, thW, thH);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#dc2626';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(thTxt, thX + thW / 2, thY + thH / 2);
+    }
+
+    // 5. Draw Title & X-Axis Label
     if (options.title) {
       ctx.fillStyle = '#0f172a';
       ctx.font = FONT_TITLE;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(options.title, padLeft + plotW / 2, Math.round(22 * scale * dpr));
+      const titleY = hasLegend ? Math.round(15 * scale * dpr) : Math.round(20 * scale * dpr);
+      ctx.fillText(options.title, padLeft + plotW / 2, titleY);
     }
 
     if (options.xLabel) {
@@ -712,25 +858,26 @@ class SimpleCanvasChart {
     // 6. Draw Key Value Badge on Chart
     let badgeBox = null;
     if (options.badgeText) {
+      const bColor = options.badgeColor || '#dc2626';
       ctx.font = FONT_BADGE;
       const bText = options.badgeText;
       const bMetrics = ctx.measureText(bText);
       const bPadX = Math.round(11 * scale * dpr);
       const bW = bMetrics.width + bPadX * 2;
-      const bH = Math.round(30 * scale * dpr);
+      const bH = Math.round(28 * scale * dpr);
       const bx = padLeft + plotW - bW - 8 * dpr;
-      const by = padTop + 8 * dpr;
+      const by = padTop + 6 * dpr;
       badgeBox = { x1: bx, y1: by, x2: bx + bW, y2: by + bH };
 
       ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
-      ctx.strokeStyle = '#dc2626';
+      ctx.strokeStyle = bColor;
       ctx.lineWidth = 2 * dpr;
       ctx.beginPath();
       ctx.roundRect ? ctx.roundRect(bx, by, bW, bH, 4 * dpr) : ctx.rect(bx, by, bW, bH);
       ctx.fill();
       ctx.stroke();
 
-      ctx.fillStyle = '#dc2626';
+      ctx.fillStyle = bColor;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(bText, bx + bW / 2, by + bH / 2);
@@ -741,13 +888,15 @@ class SimpleCanvasChart {
       const pIdx = options.pointMarker.index !== undefined ? options.pointMarker.index : (maxLen - 1);
       const px = getX(pIdx);
       const py = getY(options.pointMarker.value !== undefined ? options.pointMarker.value : 0);
+      const mColor = options.pointMarker.color || '#dc2626';
+      const mGlow = options.pointMarker.glowColor || (mColor === '#16a34a' ? 'rgba(22, 163, 74, 0.22)' : 'rgba(220, 38, 38, 0.25)');
 
-      ctx.fillStyle = 'rgba(220, 38, 38, 0.25)';
+      ctx.fillStyle = mGlow;
       ctx.beginPath();
       ctx.arc(px, py, Math.round(12 * scale * dpr), 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.fillStyle = '#dc2626';
+      ctx.fillStyle = mColor;
       ctx.beginPath();
       ctx.arc(px, py, Math.round(5 * scale * dpr), 0, Math.PI * 2);
       ctx.fill();
@@ -796,24 +945,52 @@ class SimpleCanvasChart {
       ctx.lineWidth = 3.5 * dpr;
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.92)';
       ctx.strokeText(markerLabel, tx, ty);
-      ctx.fillStyle = '#dc2626';
+      ctx.fillStyle = mColor;
       ctx.fillText(markerLabel, tx, ty);
       ctx.restore();
     }
 
-    // 7. Legend
-    let legX = padLeft + 10 * dpr;
-    const legY = padTop + 16 * dpr;
-    ctx.font = FONT_LABEL;
-    lines.slice(0, 3).forEach((line) => {
-      ctx.fillStyle = line.color;
-      ctx.fillRect(legX, legY - 6 * dpr, 12 * dpr, 12 * dpr);
-      ctx.fillStyle = '#1e293b';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(line.label, legX + 18 * dpr, legY);
-      legX += ctx.measureText(line.label).width + 30 * dpr;
-    });
+    // 7. Legend (Dedicated row ABOVE padTop so plot lines never obscure labels)
+    if (hasLegend) {
+      const legY = options.title ? Math.round(37 * scale * dpr) : Math.round(15 * scale * dpr);
+      let legFontPx = Math.round(13 * scale * dpr);
+      ctx.font = `600 ${legFontPx}px ${fontStack}`;
+
+      const swatchSize = Math.round(11 * scale * dpr);
+      const swatchTextGap = Math.round(6 * scale * dpr);
+      const itemGap = Math.round(22 * scale * dpr);
+      const maxAvailW = this.width - 20 * dpr;
+
+      const measureLegendWidth = () => visibleLegendLines.reduce((acc, l, i) => {
+        const itemW = swatchSize + swatchTextGap + ctx.measureText(l.label).width;
+        return acc + itemW + (i > 0 ? itemGap : 0);
+      }, 0);
+
+      let totalLegW = measureLegendWidth();
+      if (totalLegW > maxAvailW && totalLegW > 0) {
+        legFontPx = Math.max(Math.round(10.5 * dpr), Math.floor(legFontPx * (maxAvailW / totalLegW)));
+        ctx.font = `600 ${legFontPx}px ${fontStack}`;
+        totalLegW = measureLegendWidth();
+      }
+
+      const idealStartX = padLeft + (plotW - totalLegW) / 2;
+      let legX = Math.max(10 * dpr, Math.min(this.width - totalLegW - 10 * dpr, idealStartX));
+
+      visibleLegendLines.forEach((line) => {
+        ctx.fillStyle = line.color || '#334155';
+        ctx.beginPath();
+        ctx.roundRect
+          ? ctx.roundRect(legX, legY - swatchSize / 2, swatchSize, swatchSize, 2.5 * dpr)
+          : ctx.rect(legX, legY - swatchSize / 2, swatchSize, swatchSize);
+        ctx.fill();
+
+        ctx.fillStyle = '#1e293b';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(line.label, legX + swatchSize + swatchTextGap, legY);
+        legX += swatchSize + swatchTextGap + ctx.measureText(line.label).width + itemGap;
+      });
+    }
 
     this._meta = {
       type: 'line',

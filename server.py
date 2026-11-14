@@ -12,7 +12,7 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
-from engine import RedLampEngine
+from engine import RedLampEngine, ANOMALY_TYPES
 from index import RedLampIndexer, get_default_result_dir
 
 RESULT_DIR = get_default_result_dir()
@@ -35,7 +35,7 @@ class PredictPointRequest(BaseModel):
     entity: str
     seed: int = 0
     point: List[float]
-    context_type: str = "sample_last" # sample_last, custom, median
+    context_type: str = "normal_window" # normal_window, sample_last, custom, median
     custom_history: Optional[List[List[float]]] = None
     threshold_override: Optional[float] = None
 
@@ -72,25 +72,45 @@ def get_entity(dataset: str = Query(...), entity: str = Query(...), seed: int = 
     if not target:
         raise HTTPException(status_code=404, detail=f"Entity {entity} not found in {dataset}")
 
+    target = dict(target)
+    n_feat = int(target.get("n_features", 1))
+    target.setdefault("n_params", 1090684 + 641 * n_feat)
+    target.setdefault("train_mode", "shared" if dataset in ("msl", "smap") else "per_entity")
+
     # Check if model exists
     has_model = target["has_model"]
     extra_data = {}
     if has_model:
         try:
             d = engine.load_entity_data(dataset, entity, seed)
-            if not target.get("model_path"):
-                target["model_path"] = engine.get_model_path(dataset, entity, seed)
+            seed_model_path = engine.get_model_path(dataset, entity, seed) or target.get("model_path")
+            target["model_path"] = seed_model_path
+            if seed_model_path:
+                try:
+                    rel_p = os.path.relpath(seed_model_path, RESULT_DIR).replace("\\", "/")
+                except ValueError:
+                    rel_p = seed_model_path.replace("\\", "/")
+                target["model_rel_path"] = rel_p
+                if "_s100/" in rel_p:
+                    target["window_step"] = 100
+                elif "_s10/" in rel_p:
+                    target["window_step"] = 10
+                elif "_s1/" in rel_p:
+                    target["window_step"] = 1
             extra_data = {
                 "length": d["length"],
                 "default_threshold": d["default_threshold"],
+                "threshold_3std": d["threshold_3std"],
                 "threshold_995": d["threshold_995"],
                 "threshold_990": d["threshold_990"],
                 "threshold_950": d["threshold_950"],
                 "max_anomaly_idx": d["max_anomaly_idx"],
                 "normal_idx": d["normal_idx"],
+                "normal_point": d["normal_point"],
                 "feat_min": d["feat_min"],
                 "feat_max": d["feat_max"],
                 "feat_median": d["feat_median"],
+                "faa_excluded_classes": [ANOMALY_TYPES[idx] for idx in d["indices"] if idx != 0],
             }
         except Exception as e:
             extra_data = {"error": str(e)}
@@ -208,6 +228,6 @@ def serve_index():
 
 if __name__ == "__main__":
     import uvicorn
-    print("Khởi động RedLamp Web Demo tại http://127.0.0.1:8001")
-    uvicorn.run("server:app", host="127.0.0.1", port=8001, reload=False)
+    print("Khởi động RedLamp Web Demo tại http://127.0.0.1:8000")
+    uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=False)
 

@@ -122,6 +122,8 @@ class RedLampIndexer:
                 "seeds": seeds if len(seeds) == 5 else [0, 1, 2, 3, 4],
                 "default_seed": 0,
                 "n_features": 1,
+                "n_params": 1090684 + 641 * 1,
+                "train_mode": "per_entity",
                 "window_size": 100,
                 "window_step": 10,
                 "embedding_dim": 128,
@@ -155,6 +157,8 @@ class RedLampIndexer:
                 "seeds": seeds if len(seeds) == 5 else [0, 1, 2, 3, 4],
                 "default_seed": 0,
                 "n_features": 38,
+                "n_params": 1090684 + 641 * 38,
+                "train_mode": "per_entity",
                 "window_size": 100,
                 "window_step": 10,
                 "embedding_dim": 128,
@@ -186,6 +190,8 @@ class RedLampIndexer:
                 "seeds": seeds if len(seeds) == 5 else [0, 1, 2, 3, 4],
                 "default_seed": 0,
                 "n_features": 55,
+                "n_params": 1090684 + 641 * 55,
+                "train_mode": "shared",
                 "window_size": 100,
                 "window_step": 10,
                 "embedding_dim": 128,
@@ -217,6 +223,8 @@ class RedLampIndexer:
                 "seeds": seeds if len(seeds) == 5 else [0, 1, 2, 3, 4],
                 "default_seed": 0,
                 "n_features": 25,
+                "n_params": 1090684 + 641 * 25,
+                "train_mode": "shared",
                 "window_size": 100,
                 "window_step": 10,
                 "embedding_dim": 128,
@@ -243,7 +251,9 @@ class RedLampIndexer:
                 if models:
                     has_model = True
                     model_path = models[0]
-                    if "_s10" in model_path:
+                    if "_s100" in model_path:
+                        step = 100
+                    elif "_s10" in model_path:
                         step = 10
             
             metric = aa_metrics.get(ent_id) or aa_metrics.get(str(i))
@@ -253,6 +263,8 @@ class RedLampIndexer:
                 "seeds": [0],
                 "default_seed": 0,
                 "n_features": 1,
+                "n_params": 1090684 + 641 * 1,
+                "train_mode": "per_entity",
                 "window_size": 100,
                 "window_step": step,
                 "embedding_dim": 128,
@@ -315,6 +327,8 @@ class RedLampIndexer:
             "seeds": [0, 1, 2, 3, 4],
             "default_seed": 0,
             "n_features": rep["n_features"],
+            "n_params": rep.get("n_params", 1090684 + 641 * rep["n_features"]),
+            "train_mode": rep.get("train_mode", "per_entity"),
             "window_size": rep["window_size"],
             "window_step": rep["window_step"],
             "embedding_dim": rep["embedding_dim"],
