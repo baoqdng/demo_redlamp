@@ -28,63 +28,63 @@ ANOMALY_TYPES = [
 PSEUDO_ANOMALY_INFO = {
     0: {
         "name": "normal",
-        "name_vi": "Bình thường",
-        "desc_vi": "Tín hiệu hoạt động ổn định, không có biến dạng bất thường giả lập."
+        "name_vi": "Normal (Bình thường)",
+        "desc_vi": "Tín hiệu hoạt động ổn định, không có biến dạng Pseudo-Anomaly."
     },
     1: {
         "name": "spike",
-        "name_vi": "Đỉnh nhọn (Spike)",
-        "desc_vi": "Biến động tăng/giảm biên độ đột biến cục bộ tại 1-2 điểm."
+        "name_vi": "Spike (Đột biến đỉnh nhọn)",
+        "desc_vi": "Biến động tăng/giảm biên độ đột biến cục bộ tại 1–2 bước thời gian."
     },
     2: {
         "name": "flip",
-        "name_vi": "Đảo cực (Flip)",
-        "desc_vi": "Đảo ngược dấu hoặc cực tính tín hiệu so với hình thái chuẩn."
+        "name_vi": "Flip (Đảo chiều đoạn sóng)",
+        "desc_vi": "Thứ tự thời gian của phân đoạn tín hiệu bị đảo ngược so với chuẩn."
     },
     3: {
         "name": "speedup",
-        "name_vi": "Tăng tốc tần số (Speedup)",
-        "desc_vi": "Chu kỳ hoặc tần số dao động của chuỗi tăng nhanh bất thường."
+        "name_vi": "Speedup (Biến đổi tần số)",
+        "desc_vi": "Chu kỳ hoặc tần số dao động của chuỗi tăng/giảm đột ngột."
     },
     4: {
         "name": "noise",
-        "name_vi": "Nhiễu ngẫu nhiên (Noise)",
+        "name_vi": "Noise (Nhiễu Gaussian)",
         "desc_vi": "Biên độ bị xáo trộn bởi nhiễu trắng ngẫu nhiên cường độ lớn."
     },
     5: {
         "name": "cutoff",
-        "name_vi": "Cắt cụt biên độ (Cutoff)",
-        "desc_vi": "Tín hiệu bị giới hạn trần hoặc đáy (clipping/saturation)."
+        "name_vi": "Cutoff (Chặn ngưỡng biên độ)",
+        "desc_vi": "Tín hiệu bị giữ phẳng ở mức cố định (Clipping / Saturation)."
     },
     6: {
         "name": "average",
-        "name_vi": "Trung bình hóa (Average)",
-        "desc_vi": "Tín hiệu bị làm phẳng, mất đi dao động và biến thiên chi tiết."
+        "name_vi": "Average (Moving Average)",
+        "desc_vi": "Tín hiệu bị làm trơn quá mức, mất dao động chi tiết."
     },
     7: {
         "name": "scale",
-        "name_vi": "Co giãn biên độ (Scale)",
-        "desc_vi": "Biên độ toàn bộ cửa sổ bị phóng to hoặc thu nhỏ bất thường."
+        "name_vi": "Scale (Co giãn biên độ)",
+        "desc_vi": "Biên độ phân đoạn bị phóng đại hoặc thu nhỏ bất thường."
     },
     8: {
         "name": "wander",
-        "name_vi": "Trôi dạt xu hướng (Wander)",
-        "desc_vi": "Đường baseline trôi dạt dần khỏi trục cân bằng chuẩn."
+        "name_vi": "Wander (Baseline Drift)",
+        "desc_vi": "Đường nền (Baseline) trôi lệch dần khỏi mức cân bằng chuẩn."
     },
     9: {
         "name": "contextual",
-        "name_vi": "Bất thường ngữ cảnh (Contextual)",
-        "desc_vi": "Giá trị nằm trong khoảng hợp lệ nhưng không khớp với nhịp điệu xung quanh."
+        "name_vi": "Contextual (Bất thường ngữ cảnh)",
+        "desc_vi": "Giá trị vẫn trong dải cho phép nhưng lệch pha so với ngữ cảnh xung quanh."
     },
     10: {
         "name": "upsidedown",
-        "name_vi": "Lộn ngược chuỗi (Upside-down)",
-        "desc_vi": "Hình thái chuỗi bị đảo ngược chiều dọc qua trục trung vị."
+        "name_vi": "Upside-down (Đảo ngược biên độ)",
+        "desc_vi": "Đỉnh và đáy sóng bị lật đối xứng qua giá trị trung bình của đoạn."
     },
     11: {
         "name": "mixture",
-        "name_vi": "Bất thường hỗn hợp (Mixture)",
-        "desc_vi": "Sự kết hợp đồng thời của nhiều loại biến dạng giả lập khác nhau."
+        "name_vi": "Mixture (Ghép trộn phân đoạn)",
+        "desc_vi": "Phân đoạn tín hiệu từ thời điểm khác bị chèn lệch pha vào cửa sổ hiện tại."
     }
 }
 
@@ -494,20 +494,22 @@ class RedLampEngine:
 
         if is_custom_point and custom_window is not None:
             win_target = np.array(custom_window, dtype=np.float32)
-            t = 99
+            t = 100
         else:
             if t is None:
                 t = data_dict["max_anomaly_idx"]
             t = max(0, min(t, data_dict["length"] - 1))
             win_target = self.get_window(data_dict, t)
 
-        # Forward hooks for intermediate activations
+        # Forward hooks for intermediate activations (separate target vs normal)
         activations_target = {}
+        activations_normal = {}
+        hook_target_dict = [activations_target]
         hooks = []
         for i, blk in enumerate(model.encoder.network):
             def make_hook(name):
                 def hook(m, inp, outp):
-                    activations_target[name] = outp.detach().cpu().numpy()
+                    hook_target_dict[0][name] = outp.detach().cpu().numpy()
                 return hook
             hooks.append(blk.register_forward_hook(make_hook(f"conv_{i}")))
 
@@ -515,7 +517,9 @@ class RedLampEngine:
         win_n_tensor = torch.tensor(win_normal, dtype=torch.float32).unsqueeze(0)
 
         with torch.no_grad():
+            hook_target_dict[0] = activations_target
             x_hat_t, x_out_t, x_enc_t = model(win_t_tensor)
+            hook_target_dict[0] = activations_normal
             x_hat_n, x_out_n, x_enc_n = model(win_n_tensor)
 
         for h in hooks:
@@ -525,17 +529,90 @@ class RedLampEngine:
         rec_normal = x_hat_n.squeeze(0).cpu().numpy()
         probs_target = x_out_t.squeeze(0).cpu().numpy()
         probs_normal = x_out_n.squeeze(0).cpu().numpy()
-        embedding_target = x_enc_t.squeeze().cpu().numpy().tolist()
+        emb_t_np = x_enc_t.squeeze().cpu().numpy()
+        emb_n_np = x_enc_n.squeeze().cpu().numpy()
+        embedding_target = emb_t_np.tolist()
+        embedding_normal = emb_n_np.tolist()
+        emb_l2_dist = float(np.linalg.norm(emb_t_np - emb_n_np))
+        emb_denom = float(np.linalg.norm(emb_t_np) * np.linalg.norm(emb_n_np))
+        emb_cosine = float(np.dot(emb_t_np, emb_n_np) / emb_denom) if emb_denom > 1e-8 else 1.0
+
+        conv_energies_target = [
+            float(np.mean(np.abs(activations_target.get(f"conv_{i}", np.zeros(1)))))
+            for i in range(4)
+        ]
+        conv_energies_normal = [
+            float(np.mean(np.abs(activations_normal.get(f"conv_{i}", np.zeros(1)))))
+            for i in range(4)
+        ]
 
         # Step 2: Conv shapes & Embedding
         conv_shapes = [
-            {"layer": "Cửa sổ đầu vào", "shape": f"[1, {params.n_time}, {params.n_features}]"},
-            {"layer": "ConvBlock 0 (stride 2)", "shape": "[1, 128, 51]"},
-            {"layer": "ConvBlock 1 (stride 2)", "shape": "[1, 128, 26]"},
-            {"layer": "ConvBlock 2 (stride 2)", "shape": "[1, 256, 14]"},
-            {"layer": "ConvBlock 3 (stride 2)", "shape": "[1, 256, 8]"},
-            {"layer": "MaxPool1D (to length 1)", "shape": "[1, 256, 1]"},
-            {"layer": "Conv1x1 -> Embedding", "shape": "[1, 128, 1]"},
+            {
+                "layer": "Input Window",
+                "sub": f"{params.n_features} channels × {params.n_time} steps",
+                "shape": f"[1, {params.n_features}, {params.n_time}]",
+                "raw_shape": f"[1, {params.n_time}, {params.n_features}]",
+                "channels": params.n_features,
+                "time_len": params.n_time,
+                "role": "input",
+            },
+            {
+                "layer": "ConvBlock 0 (k=4, s=2)",
+                "sub": "128 channels × 51 steps",
+                "shape": "[1, 128, 51]",
+                "channels": 128,
+                "time_len": 51,
+                "role": "conv",
+                "energy": round(conv_energies_target[0], 4),
+                "energy_normal": round(conv_energies_normal[0], 4),
+            },
+            {
+                "layer": "ConvBlock 1 (k=4, s=2)",
+                "sub": "128 channels × 26 steps",
+                "shape": "[1, 128, 26]",
+                "channels": 128,
+                "time_len": 26,
+                "role": "conv",
+                "energy": round(conv_energies_target[1], 4),
+                "energy_normal": round(conv_energies_normal[1], 4),
+            },
+            {
+                "layer": "ConvBlock 2 (k=4, s=2)",
+                "sub": "256 channels × 14 steps",
+                "shape": "[1, 256, 14]",
+                "channels": 256,
+                "time_len": 14,
+                "role": "conv",
+                "energy": round(conv_energies_target[2], 4),
+                "energy_normal": round(conv_energies_normal[2], 4),
+            },
+            {
+                "layer": "ConvBlock 3 (k=4, s=2)",
+                "sub": "256 channels × 8 steps",
+                "shape": "[1, 256, 8]",
+                "channels": 256,
+                "time_len": 8,
+                "role": "conv",
+                "energy": round(conv_energies_target[3], 4),
+                "energy_normal": round(conv_energies_normal[3], 4),
+            },
+            {
+                "layer": "MaxPool1D (8 → 1)",
+                "sub": "Global Max Pooling",
+                "shape": "[1, 256, 1]",
+                "channels": 256,
+                "time_len": 1,
+                "role": "pool",
+            },
+            {
+                "layer": "Conv1x1 → Embedding z",
+                "sub": "Bottleneck → Decoder & Classifier",
+                "shape": "[1, 128, 1]",
+                "channels": 128,
+                "time_len": 1,
+                "role": "bottleneck",
+            },
         ]
         conv_heatmap_summary = {}
         for k, v in activations_target.items():
@@ -589,10 +666,16 @@ class RedLampEngine:
                 "is_winner": (j == 0),
             })
 
+        plot_feat_idx = 0
+        if is_custom_point and params.n_features > 1:
+            last_sq_err = (win_target[-1] - rec_target[-1]) ** 2
+            if float(np.max(last_sq_err)) > 1e-4:
+                plot_feat_idx = int(np.argmax(last_sq_err))
+
         if is_custom_point:
-            # Custom point mode: 100 points
-            time_axis = list(range(100))
-            input_slice = win_target[:, 0].tolist()
+            # Custom point mode: 100 points (1..100)
+            time_axis = list(range(1, 101))
+            input_slice = win_target[:, plot_feat_idx].tolist()
             # Step 5 slice: last 50 points of dataset + custom point
             history_len = min(50, len(data_dict["raw_score"]))
             score_slice_rec = data_dict["mse"][-history_len:].tolist() + [raw_mse_val]
@@ -604,11 +687,11 @@ class RedLampEngine:
             final_rel_val = score_slice_final[-1]
 
             explanations = [
-                f"Cửa sổ 100 điểm với điểm nạp mới tại vị trí t=99 được đưa vào phân tích.",
-                f"Embedding 10 chiều nén đặc trưng không gian của cửa sổ điểm nạp qua các tầng tích chập.",
-                f"Sai số tái tạo tại điểm nạp MSE = {mse_target:.4f} (cửa sổ chuẩn đối chứng là {mse_normal:.4f}).",
-                f"Điểm nạp được phân loại vào nhóm bất thường giả '{winner_meta['name_vi']}' đạt xác suất {probs_target[winner_idx]*100:.1f}%.",
-                f"Điểm kết hợp {raw_comb_val:.3f} ({'vượt ngưỡng ' + f'{th:.3f} (bất thường)' if is_anomaly else 'dưới ngưỡng ' + f'{th:.3f} (chuẩn)'}), phân loại giả lập tham khảo."
+                f"Input Window 100 bước với điểm mới tại t=100 được đưa vào phân tích.",
+                f"Bottleneck Embedding 128 chiều nén cửa sổ, L2 Distance Δz = {emb_l2_dist:.2f} (Cosine = {emb_cosine:.2f}).",
+                f"Sai số tái tạo Decoder tại điểm nạp MSE = {mse_target:.4f} (chuẩn đối chứng: {mse_normal:.4f}).",
+                f"Classifier phân loại điểm nạp vào lớp '{winner_meta['name_vi']}' với xác suất {probs_target[winner_idx]*100:.1f}%.",
+                f"Combined Score = {raw_comb_val:.3f} ({'vượt ngưỡng ' + f'{th:.3f} -> Bất thường' if is_anomaly else 'dưới ngưỡng ' + f'{th:.3f} -> Bình thường'})."
             ]
         else:
             # Entity series mode
@@ -626,17 +709,18 @@ class RedLampEngine:
             final_rel_val = float(data_dict["anomaly_score"][t])
 
             explanations = [
-                f"Cửa sổ 100 điểm tại vị trí t={t} được tô sáng trên chuỗi dữ liệu gốc.",
-                f"Embedding 128 chiều biểu diễn đặc trưng nén của cửa sổ sau 4 tầng tích chập.",
-                f"Sai số tái tạo MSE = {mse_target:.4f} ở cửa sổ khảo sát (so với {mse_normal:.4f} ở cửa sổ chuẩn).",
-                f"Phân loại xác suất 12 lớp bất thường giả định, loại bỏ lớp bình thường và lớp nhiễu.",
-                f"Điểm cuối = ({raw_mse_val:.3f} + {raw_ce_val:.3f})/2 = {raw_comb_val:.3f}, vượt ngưỡng phân vị 99,5."
+                f"Input Window 100 bước tại vị trí t={t} được tô sáng trên chuỗi dữ liệu gốc.",
+                f"Bottleneck Embedding 128 chiều tại t={t}, L2 Distance so với chuẩn Δz = {emb_l2_dist:.2f} (Cosine = {emb_cosine:.2f}).",
+                f"Sai số tái tạo Decoder MSE = {mse_target:.4f} ở cửa sổ khảo sát (cửa sổ chuẩn: {mse_normal:.4f}).",
+                f"Classifier dự đoán xác suất 12 lớp Pseudo-Anomaly, lọc bỏ lớp Normal và FAA (> 0.05).",
+                f"Combined Score = ({raw_mse_val:.3f} + {raw_ce_val:.3f})/2 = {raw_comb_val:.3f}, {'vượt' if is_anomaly else 'dưới'} ngưỡng P99.5 ({th:.3f})."
             ]
 
         return {
             "t": t,
             "normal_t": normal_t,
             "is_custom_point": is_custom_point,
+            "plot_feature_idx": plot_feat_idx,
             "new_point": point,
             "winner_group": {
                 "index": winner_idx,
@@ -650,10 +734,10 @@ class RedLampEngine:
             "n_features": params.n_features,
             "time_slice": time_axis,
             "input_slice": input_slice,
-            "win_target": win_target[:, 0].tolist(),
-            "win_normal": win_normal[:, 0].tolist(),
-            "rec_target": rec_target[:, 0].tolist(),
-            "rec_normal": rec_normal[:, 0].tolist(),
+            "win_target": win_target[:, plot_feat_idx].tolist(),
+            "win_normal": win_normal[:, plot_feat_idx].tolist(),
+            "rec_target": rec_target[:, plot_feat_idx].tolist(),
+            "rec_normal": rec_normal[:, plot_feat_idx].tolist(),
             "err_sq_target": err_sq_target,
             "err_sq_normal": err_sq_normal,
             "mse_target": mse_target,
@@ -661,6 +745,9 @@ class RedLampEngine:
             "conv_shapes": conv_shapes,
             "conv_heatmap": conv_heatmap_summary,
             "embedding": embedding_target,
+            "embedding_normal": embedding_normal,
+            "embedding_l2_dist": emb_l2_dist,
+            "embedding_cosine": emb_cosine,
             "classes_target": classes_target,
             "classes_normal": classes_normal,
             "score_rec_slice": score_slice_rec,

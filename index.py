@@ -309,7 +309,7 @@ class RedLampIndexer:
         all_entry = {
             "dataset": dataset,
             "entity": "ALL",
-            "display_name": f"ALL (Trung bình cả {num_ents} thực thể)",
+            "display_name": "ALL",
             "representative_entity": rep["entity"],
             "num_entities": num_ents,
             "seeds": [0, 1, 2, 3, 4],

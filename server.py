@@ -1,5 +1,6 @@
 import os
 import sys
+import numpy as np
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, Query, HTTPException, Body
 from fastapi.staticfiles import StaticFiles
@@ -64,7 +65,7 @@ def get_entity(dataset: str = Query(...), entity: str = Query(...), seed: int = 
         target = {
             **rep,
             "entity": "ALL",
-            "display_name": f"ALL (Trung bình cả {len(ent_list)} thực thể)",
+            "display_name": "ALL",
             "representative_entity": rep["entity"],
             "num_entities": len(ent_list),
         }
@@ -147,14 +148,29 @@ def get_series(
     try:
         d = engine.load_entity_data(dataset, entity, seed)
         N = d["length"]
-        # Downsample or window around peak
+        anom_arr = d["anomaly_score"]
+        # Peak-preserving downsampling so every anomaly spike & exact peak t is preserved on hover/click
         step = max(1, N // max_points)
-        indices = list(range(0, N, step))
+        if step == 1:
+            indices = list(range(N))
+        else:
+            idx_set = {0, N - 1, int(d["max_anomaly_idx"]), int(d["normal_idx"])}
+            for b in range(0, N, step):
+                bucket = anom_arr[b : min(N, b + step)]
+                peak_offset = int(bucket.argmax()) if len(bucket) > 0 else 0
+                idx_set.add(b + peak_offset)
+            indices = sorted(i for i in idx_set if 0 <= i < N)
         inp = d["inp_last"]
         D = inp.shape[1] if inp.ndim > 1 else 1
         f_key = str(feature).strip().lower()
+        dominant_feat: Optional[List[int]] = None
         if D == 1:
             feat_vals = [float(inp[i, 0]) for i in indices]
+        elif f_key == "max_dev":
+            med = np.median(inp, axis=0)
+            abs_dev = np.abs(inp - med)
+            feat_vals = [float(abs_dev[i].max()) for i in indices]
+            dominant_feat = [int(abs_dev[i].argmax()) + 1 for i in indices]
         elif f_key == "mean":
             feat_vals = [float(inp[i].mean()) for i in indices]
         elif f_key == "max":
@@ -170,6 +186,7 @@ def get_series(
             "anomaly_score": [float(d["anomaly_score"][i]) for i in indices],
             "raw_score": [float(d["raw_score"][i]) for i in indices],
             "input_first_feature": feat_vals,
+            "dominant_feature": dominant_feat,
             "max_anomaly_idx": d["max_anomaly_idx"],
             "normal_idx": d["normal_idx"],
             "threshold": d["default_threshold"],
@@ -191,6 +208,6 @@ def serve_index():
 
 if __name__ == "__main__":
     import uvicorn
-    print("Khởi động RedLamp Web Demo tại http://127.0.0.1:8000")
-    uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=False)
+    print("Khởi động RedLamp Web Demo tại http://127.0.0.1:8001")
+    uvicorn.run("server:app", host="127.0.0.1", port=8001, reload=False)
 

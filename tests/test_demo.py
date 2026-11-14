@@ -62,6 +62,28 @@ def test_api_entity_endpoint():
     assert data_aa["meta"]["has_model"] is True
     assert data_aa["meta"]["single_metrics"]["vus_roc"] > 0.8
 
+
+def test_api_series_peak_preserving_indices():
+    resp = client.get("/api/series?dataset=smd&entity=machine-1-1&seed=0&feature=0")
+    assert resp.status_code == 200
+    s = resp.json()
+    assert "indices" in s and len(s["indices"]) > 0
+    assert len(s["indices"]) == len(s["anomaly_score"]) == len(s["raw_score"]) == len(s["input_first_feature"])
+    assert s["dominant_feature"] is None
+    # Peak-preserving decimation must retain exact max_anomaly_idx and normal_idx for hover/click
+    assert s["max_anomaly_idx"] in s["indices"]
+    assert s["normal_idx"] in s["indices"]
+    # Indices must be strictly increasing real timesteps
+    assert all(s["indices"][i] < s["indices"][i + 1] for i in range(len(s["indices"]) - 1))
+
+    # Multi-channel max_dev summary must return 1-based dominant_feature (1..38)
+    resp_md = client.get("/api/series?dataset=smd&entity=machine-1-1&seed=0&feature=max_dev")
+    assert resp_md.status_code == 200
+    smd = resp_md.json()
+    assert smd["dominant_feature"] is not None
+    assert len(smd["dominant_feature"]) == len(smd["indices"])
+    assert all(1 <= ch <= 38 for ch in smd["dominant_feature"])
+
 def test_predict_point_stability():
     # Test manual point prediction on SMD
     pt = [0.1] * 38
