@@ -1530,7 +1530,6 @@ textarea.form-control {
   font-size: 12.5px;
   font-weight: 700;
   color: #334155;
-  cursor: help;
 }
 
 .color-dot.green-keep {
@@ -1548,28 +1547,28 @@ textarea.form-control {
   border: 1.5px solid #dc2626;
 }
 
-.decoder-mask-card {
+.formula-card.decoder-mask-card {
   background-color: #f8fafc;
   border-color: #cbd5e1;
-  padding: 6px 14px;
+  padding: 7px 14px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
   transition: background-color 0.18s ease, border-color 0.18s ease;
 }
 
-.decoder-mask-card.mask-on {
+.formula-card.decoder-mask-card.mask-on {
   background-color: #fffbeb;
   border-color: #f59e0b;
 }
 
 .decoder-mask-card .formula-title {
   color: #0f172a;
+  font-size: 13.5px;
 }
 
 .decoder-mask-card.mask-on .formula-title {
   color: #b45309;
-}
-
-.decoder-mask-card .formula-equation {
-  font-size: 15px;
 }
 
 .mask-inspector-row {
@@ -1795,7 +1794,7 @@ textarea.form-control {
   justify-content: space-between;
   gap: 8px;
   height: 28px;
-  min-width: 158px;
+  min-width: 136px;
   padding: 0 10px;
   background: #ffffff;
   border: 1px solid #cbd5e1;
@@ -1848,65 +1847,11 @@ textarea.form-control {
   margin-bottom: 6px;
 }
 
-.fp-summary-list {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  margin-bottom: 9px;
-  padding-bottom: 9px;
-  border-bottom: 1px solid #e2e8f0;
-}
-
-.fp-summary-btn {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  padding: 6px 9px;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #f8fafc;
-  color: #1e293b;
-  font-size: 12.5px;
-  font-weight: 600;
-  cursor: pointer;
-  text-align: left;
-  transition: all 0.12s ease;
-}
-
-.fp-summary-btn:hover {
-  background: #eff6ff;
-  border-color: #93c5fd;
-  color: #1d4ed8;
-}
-
-.fp-summary-btn.active {
-  background: #eff6ff;
-  border-color: #2563eb;
-  color: #1d4ed8;
-  font-weight: 700;
-}
-
-.fp-summary-tag {
-  font-family: monospace;
-  font-size: 11px;
-  font-weight: 700;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: #e2e8f0;
-  color: #475569;
-}
-
-.fp-summary-btn.active .fp-summary-tag {
-  background: #dbeafe;
-  color: #1d4ed8;
-}
-
 .fp-chip-grid {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
   gap: 5px;
-  max-height: 168px;
+  max-height: 224px;
   overflow-y: auto;
   padding-right: 2px;
 }

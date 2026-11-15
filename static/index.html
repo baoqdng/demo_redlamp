@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RedLamp Demo - Phát hiện bất thường chuỗi thời gian</title>
-  <link rel="stylesheet" href="/static/style.css?v=20261114_decoder_mask">
+  <link rel="stylesheet" href="/static/style.css?v=20261115_step3_mask">
 </head>
 
 <body>
@@ -103,7 +103,8 @@
           </div>
         </div>
         <div class="metrics-footnote">
-          * Tập 5 seed: hiển thị giá trị Seed đang chọn và Trung bình ± Độ lệch chuẩn (5 seed) · Tập UCR (Anomaly Archive): hiển thị chỉ số thực nghiệm chuẩn.
+          * Tập 5 seed: hiển thị giá trị Seed đang chọn và Trung bình ± Độ lệch chuẩn (5 seed) · Tập UCR (Anomaly
+          Archive): hiển thị chỉ số thực nghiệm chuẩn.
         </div>
       </div>
 
@@ -130,7 +131,7 @@
                 thị:</span>
               <div class="feature-picker-wrap" id="wrap-feature-picker">
                 <button type="button" class="feature-picker-btn" id="btn-feature-picker">
-                  <span id="lbl-feature-picker">Độ lệch Max</span>
+                  <span id="lbl-feature-picker">Đặc trưng D1</span>
                   <span class="feature-picker-caret">▾</span>
                 </button>
                 <div class="feature-picker-popover" id="popover-feature-picker" style="display:none;"></div>
@@ -237,12 +238,17 @@
         <!-- SLIDE 3: DECODER RECONSTRUCTION & ANOMALY MASK -->
         <div class="explain-slide" id="slide-2">
           <div class="slide-header">
-            <div class="slide-title">Bước 3: Tái tạo qua Decoder, mặt nạ Anomaly Mask &amp; sai số MSE</div>
+            <div class="slide-title">Bước 3: Tái tạo qua Decoder, Anomaly Mask &amp; sai số MSE</div>
             <div class="slide-header-right">
-              <div class="decoder-mask-legend"
-                title="Khi huấn luyện (Eq. 2): mặt nạ Anomaly Mask gán hệ số (1 - M) = 0 tại các vị trí chèn lỗi giả để che sai số, ép Decoder chỉ học khôi phục quy luật sóng bình thường.">
-                <span class="mask-tag-pill">🎭 Anomaly Mask (Train): (1 &minus; M) = 0 che vùng lỗi giả</span>
-                <span class="legend-item"><span class="color-dot red-soft"></span> Độ lệch |x &minus; x&#770;| (Test)</span>
+              <button type="button" class="btn-mask-toggle" id="btn-toggle-decoder-mask"
+                title="Chuyển đổi giữa chế độ Kiểm thử (TẮT Mask) và mô phỏng Huấn luyện (BẬT Mask)">
+                <span class="mask-switch-dot"></span>
+                <span id="lbl-toggle-decoder-mask">Anomaly Mask: TẮT (Kiểm thử)</span>
+              </button>
+              <div class="decoder-mask-legend">
+                <span class="legend-item"><span class="color-dot green-keep"></span> Giữ lại (1)</span>
+                <span class="legend-item"><span class="color-dot amber-mask"></span> Che lỗi (0)</span>
+                <span class="legend-item"><span class="color-dot red-soft"></span> Độ lệch tái tạo</span>
               </div>
               <div class="slide-badge">Bước 3/5</div>
               <button class="btn btn-xs btn-outline btn-export" data-canvas="canvas-slide-3-target">Tải PNG</button>
@@ -269,17 +275,19 @@
             </div>
           </div>
 
-          <!-- Decoder Anomaly Mask Formula Card (Eq. 2) -->
+          <!-- Decoder Anomaly Mask Summary Card -->
           <div class="formula-card decoder-mask-card" id="decoder-mask-card">
-            <div class="formula-main-row">
-              <div class="formula-title">ANOMALY MASK (EQ. 2):</div>
-              <div class="formula-equation" id="decoder-mask-equation">
-                L<sub>MSE</sub> = &Vert;(1 &minus; M) &odot; (X &minus; X&#770;)&Vert;&sup2; &nbsp;&middot;&nbsp;
-                <strong>Train:</strong> M = 1 che lỗi giả (1 &minus; M = 0) &rArr; Decoder chỉ học sóng chuẩn
+            <div class="mask-inspector-row">
+              <div class="formula-title" id="decoder-mask-title">CHẾ ĐỘ KIỂM THỬ (TẮT MASK):</div>
+              <div class="mask-cells-pills">
+                <span class="mask-cell-chip shape" id="mask-chip-shape">Kích thước: --</span>
+                <span class="mask-cell-chip keep" id="mask-chip-keep">Giữ lại (1): --</span>
+                <span class="mask-cell-chip zero" id="mask-chip-zero">Che lỗi (0): --</span>
               </div>
             </div>
             <div class="formula-note" id="decoder-mask-note">
-              * Khi Test (không che Mask): sóng tái tạo giữ quỹ đạo chuẩn làm lộ rõ độ lệch tại vùng sự cố.
+              Mở toàn bộ các phần tử khi kiểm thử: sóng tái tạo đi theo quy luật chuẩn nên làm lộ rõ độ lệch tại vùng sự
+              cố.
             </div>
           </div>
 
@@ -381,7 +389,7 @@
               <button type="button" class="btn btn-xs btn-outline" id="btn-fill-point-sample"
                 title="Điền bộ thông số vận hành chuẩn (bình thường) tại Cửa sổ chuẩn">✓ Mẫu chuẩn</button>
               <button type="button" class="btn btn-xs btn-spike-preset" id="btn-fill-point-spike"
-                title="Tạo đột biến cảm biến (đẩy các kênh đầu lên biên 1.0 trong miền [0, 1])">⚡ Mẫu đột biến</button>
+                title="Tự động điền mẫu đột biến cảm biến phù hợp theo từng thực thể và tập dữ liệu">⚡ Mẫu đột biến</button>
             </div>
             <div id="container-point-inputs" class="point-inputs-scroll"></div>
           </div>
@@ -431,7 +439,8 @@
                 <div class="sc-title">Nhánh Classifier (CE)</div>
                 <div class="sc-val" id="res-raw-ce">--</div>
               </div>
-              <div class="score-card highlight" id="card-raw-comb" title="Điểm bất thường kết hợp hai nhánh = (MSE + CE) / 2">
+              <div class="score-card highlight" id="card-raw-comb"
+                title="Điểm bất thường kết hợp hai nhánh = (MSE + CE) / 2">
                 <div class="sc-title">Combined = (MSE + CE) / 2</div>
                 <div class="sc-val" id="res-raw-comb">--</div>
               </div>
@@ -477,7 +486,7 @@
   </div>
 
   <script src="/static/chart.js?v=20261114_mask_toggle"></script>
-  <script src="/static/app.js?v=20261114_mask_toggle"></script>
+  <script src="/static/app.js?v=20261115_spike_preset"></script>
 </body>
 
 </html>

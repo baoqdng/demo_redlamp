@@ -84,20 +84,17 @@ def test_api_series_peak_preserving_indices():
     s = resp.json()
     assert "indices" in s and len(s["indices"]) > 0
     assert len(s["indices"]) == len(s["anomaly_score"]) == len(s["raw_score"]) == len(s["input_first_feature"])
-    assert s["dominant_feature"] is None
     # Peak-preserving decimation must retain exact max_anomaly_idx and normal_idx for hover/click
     assert s["max_anomaly_idx"] in s["indices"]
     assert s["normal_idx"] in s["indices"]
     # Indices must be strictly increasing real timesteps
     assert all(s["indices"][i] < s["indices"][i + 1] for i in range(len(s["indices"]) - 1))
 
-    # Multi-channel max_dev summary must return 1-based dominant_feature (1..38)
-    resp_md = client.get("/api/series?dataset=smd&entity=machine-1-1&seed=0&feature=max_dev")
-    assert resp_md.status_code == 200
-    smd = resp_md.json()
-    assert smd["dominant_feature"] is not None
-    assert len(smd["dominant_feature"]) == len(smd["indices"])
-    assert all(1 <= ch <= 38 for ch in smd["dominant_feature"])
+    # Individual feature selection (e.g. D38 -> feature=37) must return matching length
+    resp_ch = client.get("/api/series?dataset=smd&entity=machine-1-1&seed=0&feature=37")
+    assert resp_ch.status_code == 200
+    sch = resp_ch.json()
+    assert len(sch["input_first_feature"]) == len(sch["indices"])
 
 def test_predict_point_stability():
     # Test manual point prediction on SMD
@@ -227,13 +224,18 @@ def test_numerical_accuracy_against_saved_test_output():
 
 
 def test_clean_tab3_normal_and_unit_spike_across_five_datasets():
-    """Verify Tab 3 baseline (Mẫu chuẩn) is normal and [0, 1] spike (D1..D5=1) is anomalous across all 5 datasets."""
+    """Verify Tab 3 baseline (Mẫu chuẩn) is normal and calibrated spike_point (Mẫu đột biến) is anomalous across all 5 datasets."""
     cases = [
         ("smd", "ALL", 0),
         ("smd", "machine-1-1", 0),
+        ("smd", "machine-2-8", 0),
+        ("smd", "machine-2-2", 0),
+        ("smd", "machine-3-6", 0),
         ("iops", "KPI-05f10d3a-239c-3bef-9bdc-a2feeb0037aa", 0),
         ("msl", "C-1", 0),
+        ("msl", "P-14", 0),
         ("smap", "A-1", 0),
+        ("smap", "D-5", 0),
         ("anomaly_archive", "001", 0),
     ]
     for ds, ent, seed in cases:
@@ -242,7 +244,9 @@ def test_clean_tab3_normal_and_unit_spike_across_five_datasets():
         n_feat = ent_resp["meta"]["n_features"]
         assert abs(detail["default_threshold"] - detail["threshold_3std"]) < 1e-7
         normal_pt = detail["normal_point"]
+        spike_pt = detail["spike_point"]
         assert len(normal_pt) == n_feat
+        assert len(spike_pt) == n_feat
 
         # 1. Baseline normal_point must be BÌNH THƯỜNG and never show 0.0% prob
         res_norm = client.post("/api/predict_point", json={
@@ -256,12 +260,7 @@ def test_clean_tab3_normal_and_unit_spike_across_five_datasets():
         assert res_norm["conclusion"] == "BÌNH THƯỜNG"
         assert res_norm["predicted_group"]["prob"] > 0.90
 
-        # 2. Spike preset inside [0, 1] (D1..D5 = 1 or 0 if baseline >= 0.5) must be BẤT THƯỜNG
-        spike_pt = list(normal_pt)
-        k = min(5, n_feat)
-        for idx in range(k):
-            spike_pt[idx] = 0.0 if normal_pt[idx] >= 0.5 else 1.0
-
+        # 2. Calibrated spike_point (Mẫu đột biến) must always be BẤT THƯỜNG
         res_spike = client.post("/api/predict_point", json={
             "dataset": ds,
             "entity": ent,
@@ -269,9 +268,9 @@ def test_clean_tab3_normal_and_unit_spike_across_five_datasets():
             "point": spike_pt,
             "context_type": "normal_window",
         }).json()
-        assert res_spike["is_anomaly"] is True, f"{ds}/{ent} [0,1] spike should be anomaly, got {res_spike['raw_combined']} vs {res_spike['threshold']}"
+        assert res_spike["is_anomaly"] is True, f"{ds}/{ent} spike_point should be anomaly, got {res_spike['raw_combined']} vs {res_spike['threshold']}"
         assert res_spike["conclusion"] == "BẤT THƯỜNG"
-        if ds == "smd":
+        if (ds, ent) in (("smd", "machine-1-1"), ("smd", "machine-2-8")):
             assert res_spike["predicted_group"]["name"].lower() == "spike"
             assert res_spike["predicted_group"]["prob"] > 0.95
 

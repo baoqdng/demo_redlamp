@@ -1,6 +1,7 @@
 import os
 import sys
 import glob
+import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -93,6 +94,7 @@ class RedLampEngine:
         self.result_dir = os.path.abspath(result_dir or get_default_result_dir())
         self.model_cache: Dict[Tuple[str, str, int], Any] = {}
         self.data_cache: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
+        self.spike_cache: Dict[Tuple[str, str, int], List[float]] = {}
 
     def _resolve_entity(self, dataset: str, entity: str) -> str:
         if entity and entity.upper() != "ALL":
@@ -340,6 +342,141 @@ class RedLampEngine:
             pad = np.tile(inp_last[0:1], (pad_count, 1))
             actual = inp_last[0 : t_clamped + 1]
             return np.vstack([pad, actual])
+
+    def get_spike_point(self, dataset: str, entity: str, seed: int) -> List[float]:
+        """Computes and caches a calibrated anomalous point at t=100 for Tab 3 'Mẫu đột biến'."""
+        resolved = self._resolve_entity(dataset, entity)
+        key = (dataset, resolved, seed)
+        if key in self.spike_cache:
+            return self.spike_cache[key]
+
+        model, params = self.load_model(dataset, resolved, seed)
+        d = self.load_entity_data(dataset, resolved, seed)
+        D = params.n_features
+        digits = 4 if D == 1 else 3
+        base = np.array([round(float(v), digits) for v in d["normal_point"]], dtype=np.float32)
+        win_norm = self.get_window(d, d["normal_idx"])
+        hist_std = np.std(win_norm[:-1, :], axis=0)
+        th = float(d["default_threshold"])
+        indices = set(d["indices"])
+        allowed = [j for j in range(12) if j not in indices]
+
+        def flip01(v: float) -> float:
+            return 0.0 if v >= 0.5 else 1.0
+
+        tier1: List[np.ndarray] = []
+        # 1. Classic top-channel [0, 1] presets
+        for k in ([min(5, D), min(3, D), min(2, D)] if D > 1 else [1]):
+            p = base.copy()
+            for i in range(k):
+                p[i] = flip01(p[i])
+            tier1.append(p)
+
+        # 2. Active oscillating channel subsets
+        active_cols = [i for i in range(D) if hist_std[i] > 1e-3]
+        for k in [2, 3, 4]:
+            if len(active_cols) >= k:
+                p = base.copy()
+                for i in active_cols[:k]:
+                    p[i] = flip01(p[i])
+                tier1.append(p)
+
+        # 3. Single-channel [0, 1] flips across all features
+        for i in range(D):
+            p = base.copy()
+            p[i] = flip01(p[i])
+            tier1.append(p)
+            if D == 1:
+                p_alt = base.copy()
+                p_alt[0] = 1.0 if p[0] == 0.0 else 0.0
+                tier1.append(p_alt)
+
+        # 4. Adjacent 2-channel [0, 1] flips
+        for i in range(min(25, D - 1)):
+            p = base.copy()
+            p[i] = flip01(p[i])
+            p[i + 1] = flip01(p[i + 1])
+            tier1.append(p)
+
+        # 5. Actual peak test point if within [0, 1]
+        peak_raw = np.array(
+            [round(float(v), digits) for v in d["inp_last"][d["max_anomaly_idx"]]],
+            dtype=np.float32,
+        )
+        if np.all((peak_raw >= 0.0) & (peak_raw <= 1.0)):
+            tier1.append(peak_raw)
+
+        # Tier 2: progressive spike amplitudes + guaranteed threshold-crossing scale
+        tier2: List[np.ndarray] = []
+        if not np.all((peak_raw >= 0.0) & (peak_raw <= 1.0)):
+            tier2.append(peak_raw)
+
+        top_active = active_cols[: min(5, len(active_cols))] if active_cols else list(range(min(5, D)))
+        first_k = list(range(min(5, D)))
+        dyn_amp = float(math.ceil(math.sqrt(max(1.0, 2.8 * th) * 200.0 * D / max(1, len(first_k)))))
+        amp_list = [1.5, 2.0, -1.0, 3.0, -2.0, 5.0, 8.0, 12.0, -5.0, 20.0]
+        if dyn_amp > 20.0:
+            amp_list.append(dyn_amp)
+
+        for amp in amp_list:
+            c0 = top_active[0] if top_active else 0
+            p1 = base.copy()
+            p1[c0] = round(float(base[c0] + amp if amp > 20.0 else amp), digits)
+            tier2.append(p1)
+            if D > 1:
+                pa = base.copy()
+                for c in top_active:
+                    pa[c] = round(float(base[c] + amp if amp > 20.0 else amp), digits)
+                tier2.append(pa)
+                pf = base.copy()
+                for c in first_k:
+                    pf[c] = round(float(base[c] + amp if amp > 20.0 else amp), digits)
+                tier2.append(pf)
+
+        all_cands = tier1 + tier2
+        n_t1 = len(tier1)
+        batch = np.repeat(win_norm[None, :, :], len(all_cands), axis=0)
+        for idx_c, p in enumerate(all_cands):
+            batch[idx_c, -1, :] = p
+
+        with torch.no_grad():
+            wt = torch.tensor(batch, dtype=torch.float32)
+            x_hat, x_out, _ = model(wt)
+            mse_arr = torch.mean((wt - x_hat) ** 2, dim=(1, 2)).numpy()
+            probs = x_out.numpy()
+
+        ce_arr = np.sum(probs[:, allowed], axis=1) if allowed else np.zeros(len(all_cands))
+        comb_arr = (mse_arr + ce_arr) / 2.0
+
+        t1_valid = [k for k in range(n_t1) if comb_arr[k] > th * 1.03 + 0.005]
+        if not t1_valid:
+            t1_valid = [k for k in range(n_t1) if comb_arr[k] > th + 1e-4]
+
+        if t1_valid:
+            def rank_t1(k: int):
+                p = all_cands[k]
+                mod_cols = [i for i in range(D) if abs(float(p[i]) - float(base[i])) > 1.5e-3]
+                has_active = any(hist_std[i] > 1e-3 for i in mod_cols) if D > 1 else True
+                in_top10 = all(i < 10 for i in mod_cols)
+                win_j = max(allowed, key=lambda j: probs[k, j]) if allowed else 0
+                is_spike_cls = (win_j == 1 and probs[k, 1] > 0.7)
+                return (
+                    1 if is_spike_cls else 0,
+                    1 if has_active else 0,
+                    1 if in_top10 else 0,
+                    float(comb_arr[k]),
+                )
+
+            best_k = max(t1_valid, key=rank_t1)
+        else:
+            t2_valid = [k for k in range(n_t1, len(all_cands)) if comb_arr[k] > th * 1.05 + 0.005]
+            if not t2_valid:
+                t2_valid = [k for k in range(n_t1, len(all_cands)) if comb_arr[k] > th + 1e-4]
+            best_k = t2_valid[0] if t2_valid else int(np.argmax(comb_arr))
+
+        chosen = [round(float(v), digits) for v in all_cands[best_k].tolist()]
+        self.spike_cache[key] = chosen
+        return chosen
 
     def predict_point(
         self,

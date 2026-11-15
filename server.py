@@ -107,6 +107,7 @@ def get_entity(dataset: str = Query(...), entity: str = Query(...), seed: int = 
                 "max_anomaly_idx": d["max_anomaly_idx"],
                 "normal_idx": d["normal_idx"],
                 "normal_point": d["normal_point"],
+                "spike_point": engine.get_spike_point(dataset, entity, seed),
                 "feat_min": d["feat_min"],
                 "feat_max": d["feat_max"],
                 "feat_median": d["feat_median"],
@@ -183,18 +184,8 @@ def get_series(
         inp = d["inp_last"]
         D = inp.shape[1] if inp.ndim > 1 else 1
         f_key = str(feature).strip().lower()
-        dominant_feat: Optional[List[int]] = None
         if D == 1:
             feat_vals = [float(inp[i, 0]) for i in indices]
-        elif f_key == "max_dev":
-            med = np.median(inp, axis=0)
-            abs_dev = np.abs(inp - med)
-            feat_vals = [float(abs_dev[i].max()) for i in indices]
-            dominant_feat = [int(abs_dev[i].argmax()) + 1 for i in indices]
-        elif f_key == "mean":
-            feat_vals = [float(inp[i].mean()) for i in indices]
-        elif f_key == "max":
-            feat_vals = [float(inp[i].max()) for i in indices]
         else:
             try:
                 f_idx = max(0, min(int(f_key), D - 1))
@@ -206,7 +197,6 @@ def get_series(
             "anomaly_score": [float(d["anomaly_score"][i]) for i in indices],
             "raw_score": [float(d["raw_score"][i]) for i in indices],
             "input_first_feature": feat_vals,
-            "dominant_feature": dominant_feat,
             "max_anomaly_idx": d["max_anomaly_idx"],
             "normal_idx": d["normal_idx"],
             "threshold": d["default_threshold"],

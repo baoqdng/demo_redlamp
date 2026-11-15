@@ -10,7 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let explainData = null;
   let currentStep = 0; // 0..4
   let seriesOverviewData = null;
-  let currentOverviewFeature = 'max_dev';
+  let currentOverviewFeature = '0';
   let currentOverviewMetric = 'vus_pr';
   let lastPredictedWindow = null;
   let lastPredictedPoint = null;
@@ -473,9 +473,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function formatFeaturePickerLabel(val, nFeatures) {
-    if (val === 'max_dev') return `Độ lệch Max (${nFeatures} kênh)`;
-    if (val === 'mean') return `Trung bình (${nFeatures} kênh)`;
-    const idx = parseInt(val, 10) || 0;
+    const idx = Math.max(0, Math.min(nFeatures - 1, parseInt(val, 10) || 0));
     return `Đặc trưng D${idx + 1}`;
   }
 
@@ -515,6 +513,8 @@ document.addEventListener('DOMContentLoaded', () => {
           pop.style.display = 'block';
           btn.classList.add('open');
           positionFeaturePickerPopover(btn, pop);
+          const actChip = pop.querySelector('.fp-chip.active');
+          if (actChip) actChip.scrollIntoView({ block: 'nearest' });
         }
       });
     }
@@ -572,8 +572,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const prevVal = currentOverviewFeature;
     const parsedPrev = parseInt(prevVal, 10);
     const validNumeric = !isNaN(parsedPrev) && parsedPrev >= 0 && parsedPrev < nFeatures;
-    const validSummary = prevVal === 'max_dev' || prevVal === 'mean';
-    currentOverviewFeature = validSummary ? prevVal : (validNumeric ? String(parsedPrev) : 'max_dev');
+    currentOverviewFeature = validNumeric ? String(parsedPrev) : '0';
     lblFeat.textContent = formatFeaturePickerLabel(currentOverviewFeature, nFeatures);
 
     let chipsHtml = '';
@@ -584,17 +583,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     popFeat.innerHTML = `
-      <div class="fp-section-title">Tổng hợp đa kênh (${nFeatures} đặc trưng)</div>
-      <div class="fp-summary-list">
-        <button type="button" class="fp-summary-btn ${currentOverviewFeature === 'max_dev' ? 'active' : ''}" data-feat="max_dev">
-          <span>Độ lệch lớn nhất</span>
-          <span class="fp-summary-tag">Max |x - med|</span>
-        </button>
-        <button type="button" class="fp-summary-btn ${currentOverviewFeature === 'mean' ? 'active' : ''}" data-feat="mean">
-          <span>Trung bình cộng</span>
-          <span class="fp-summary-tag">Mean D1..D${nFeatures}</span>
-        </button>
-      </div>
       <div class="fp-section-title">Chọn đặc trưng riêng lẻ (D1 – D${nFeatures})</div>
       <div class="fp-chip-grid">${chipsHtml}</div>
     `;
@@ -741,17 +729,9 @@ document.addEventListener('DOMContentLoaded', () => {
     let inputLabel = 'Tín hiệu chuỗi thời gian gốc';
     let shortFeatLabel = 'Tín hiệu gốc';
     if (nFeat > 1) {
-      if (currentOverviewFeature === 'max_dev') {
-        inputLabel = `Độ lệch lớn nhất trên ${nFeat} đặc trưng (Max |x - median|)`;
-        shortFeatLabel = `Độ lệch lớn nhất (${nFeat} kênh)`;
-      } else if (currentOverviewFeature === 'mean') {
-        inputLabel = `Tín hiệu trung bình ${nFeat} đặc trưng (Mean D1..D${nFeat})`;
-        shortFeatLabel = `Trung bình ${nFeat} kênh`;
-      } else {
-        const idx = parseInt(currentOverviewFeature, 10) || 0;
-        inputLabel = `Tín hiệu gốc (Đặc trưng D${idx + 1} / ${nFeat} đặc trưng)`;
-        shortFeatLabel = `Tín hiệu gốc (D${idx + 1})`;
-      }
+      const idx = Math.max(0, Math.min(nFeat - 1, parseInt(currentOverviewFeature, 10) || 0));
+      inputLabel = `Tín hiệu gốc (Đặc trưng D${idx + 1} / ${nFeat} đặc trưng)`;
+      shortFeatLabel = `Tín hiệu gốc (D${idx + 1})`;
     }
     const inputLine = {
       label: inputLabel,
@@ -770,7 +750,6 @@ document.addEventListener('DOMContentLoaded', () => {
         ? `ALL — Chuỗi mẫu đại diện: ${currentEntityMeta.representative_entity}`
         : currentEntity;
     const indices = seriesOverviewData.indices || [];
-    const domFeats = seriesOverviewData.dominant_feature || null;
     const th = seriesOverviewData.threshold;
 
     chartOverview.drawLineChart([inputLine, scoreLine], {
@@ -783,7 +762,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const sigVal = seriesOverviewData.input_first_feature[idx];
         const relVal = seriesOverviewData.anomaly_score[idx];
         const rawVal = seriesOverviewData.raw_score ? seriesOverviewData.raw_score[idx] : null;
-        const domCh = (domFeats && domFeats[idx]) ? ` (tại D${domFeats[idx]})` : '';
         const isAnom = (rawVal !== null && th !== undefined) ? (rawVal > th) : (relVal > 0.5);
         const pill = isAnom
           ? '<span class="tt-pill anom">⚠️ Bất thường (&gt; μ + 3σ)</span>'
@@ -800,7 +778,7 @@ document.addEventListener('DOMContentLoaded', () => {
           <div class="tt-header"><span>Vị trí t = ${realT}</span>${pill}</div>
           <div class="tt-row">
             <span class="tt-label"><span class="tt-dot" style="background:#334155"></span>${shortFeatLabel}</span>
-            <span class="tt-val">${sigVal !== undefined ? sigVal.toFixed(4) + domCh : '--'}</span>
+            <span class="tt-val">${sigVal !== undefined ? sigVal.toFixed(4) : '--'}</span>
           </div>
           <div class="tt-row">
             <span class="tt-label"><span class="tt-dot" style="background:#dc2626"></span>Điểm tương đối [0, 1]</span>
@@ -824,6 +802,19 @@ document.addEventListener('DOMContentLoaded', () => {
         : Array(nFeatures).fill(0.1);
     const digits = nFeatures === 1 ? 4 : 3;
     return src.map(v => parseFloat(Number(v).toFixed(digits)));
+  }
+
+  function getSpikePreset(nFeatures) {
+    if (currentEntityDetail && Array.isArray(currentEntityDetail.spike_point) && currentEntityDetail.spike_point.length === nFeatures) {
+      const digits = nFeatures === 1 ? 4 : 3;
+      return currentEntityDetail.spike_point.map(v => parseFloat(Number(v).toFixed(digits)));
+    }
+    const fallback = baselinePoint.slice();
+    const spikeCount = Math.min(5, nFeatures);
+    for (let i = 0; i < spikeCount; i++) {
+      fallback[i] = fallback[i] >= 0.5 ? 0 : 1;
+    }
+    return fallback;
   }
 
   function updateModifiedHighlights() {
@@ -957,22 +948,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnSpike = document.getElementById('btn-fill-point-spike');
     if (btnSpike) {
       btnSpike.onclick = () => {
-        const spikeCount = Math.min(5, nFeatures);
+        const spikePt = getSpikePreset(nFeatures);
         if (nFeatures === 1) {
           const inp = document.getElementById('pt-feat-0');
-          if (inp) inp.value = baselinePoint[0] >= 0.5 ? 0 : 1;
+          if (inp) inp.value = spikePt[0];
         } else {
           document.querySelectorAll('.pt-feat').forEach(inp => {
             const idx = parseInt(inp.dataset.idx, 10);
-            if (idx < spikeCount) {
-              inp.value = baselinePoint[idx] >= 0.5 ? 0 : 1;
-            } else {
-              inp.value = baselinePoint[idx];
-            }
+            inp.value = spikePt[idx];
           });
         }
         if (selChartFeat) selChartFeat.value = 'auto';
         updateModifiedHighlights();
+        const firstMod = container.querySelector('.pt-modified');
+        if (firstMod) firstMod.scrollIntoView({ block: 'nearest' });
         if (currentEntityMeta && currentEntityMeta.has_model) {
           runPointPrediction(true);
         }
@@ -1536,29 +1525,35 @@ document.addEventListener('DOMContentLoaded', () => {
       const btnMaskToggle = document.getElementById('btn-toggle-decoder-mask');
       const lblMaskToggle = document.getElementById('lbl-toggle-decoder-mask');
       const maskCardEl = document.getElementById('decoder-mask-card');
+      const maskTitleEl = document.getElementById('decoder-mask-title');
       if (btnMaskToggle) btnMaskToggle.classList.toggle('mask-on', isDecoderMaskEnabled);
       if (maskCardEl) maskCardEl.classList.toggle('mask-on', isDecoderMaskEnabled);
       if (lblMaskToggle) {
         lblMaskToggle.textContent = isDecoderMaskEnabled
-          ? '🎭 Anomaly Mask: BẬT (Che lỗi = 0)'
-          : '🎭 Anomaly Mask: TẮT (Test)';
+          ? 'Anomaly Mask: BẬT (Huấn luyện)'
+          : 'Anomaly Mask: TẮT (Kiểm thử)';
+      }
+      if (maskTitleEl) {
+        maskTitleEl.textContent = isDecoderMaskEnabled
+          ? 'MÔ PHỎNG HUẤN LUYỆN (BẬT MASK):'
+          : 'CHẾ ĐỘ KIỂM THỬ (TẮT MASK):';
       }
 
-      // Sync Mask Matrix {0, 1} Inspector Chips
+      // Sync Anomaly Mask Summary Chips
       const chipShape = document.getElementById('mask-chip-shape');
       const chipKeep = document.getElementById('mask-chip-keep');
       const chipZero = document.getElementById('mask-chip-zero');
       if (chipShape) {
-        chipShape.textContent = `Ma trận {0,1}: ${nFeat}×${winLen} = ${totalCells.toLocaleString()} ô`;
+        chipShape.textContent = `Kích thước: ${nFeat} × ${winLen} (${totalCells.toLocaleString()} phần tử)`;
       }
       if (isDecoderMaskEnabled) {
         const keepPct = ((keptCells / Math.max(1, totalCells)) * 100).toFixed(1);
         const zeroPct = ((maskedCells / Math.max(1, totalCells)) * 100).toFixed(1);
-        if (chipKeep) chipKeep.textContent = `Mask = 1 (Giữ): ${keptCells.toLocaleString()} ô (${keepPct}%)`;
-        if (chipZero) chipZero.textContent = `Mask = 0 (Che ×0): ${maskedCells.toLocaleString()} ô (${zeroPct}%)`;
+        if (chipKeep) chipKeep.textContent = `Giữ lại (1): ${keptCells.toLocaleString()} phần tử (${keepPct}%)`;
+        if (chipZero) chipZero.textContent = `Che lỗi (0): ${maskedCells.toLocaleString()} phần tử (${zeroPct}%)`;
       } else {
-        if (chipKeep) chipKeep.textContent = `Mask = 1 (Mở toàn bộ): ${totalCells.toLocaleString()} ô (100%)`;
-        if (chipZero) chipZero.textContent = `Mask = 0 (Che ×0): 0 ô (0%)`;
+        if (chipKeep) chipKeep.textContent = `Giữ lại (1): ${totalCells.toLocaleString()} phần tử (100%)`;
+        if (chipZero) chipZero.textContent = `Che lỗi (0): 0 phần tử (0%)`;
       }
 
       const makeStep3Tooltip = (isTargetChart) => (idx) => {
@@ -1575,10 +1570,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const chMaskedCnt = isTargetChart ? (maskedChCountTarget[idx] ?? 0) : (maskedChCountNormal[idx] ?? 0);
 
         const maskValStr = !isDecoderMaskEnabled
-          ? '1 (Đang TẮT Mask — mở 100%)'
+          ? '1 (Đang tắt Mask — mở 100%)'
           : (stepBit === 0
-            ? `<span style="color:#d97706;font-weight:800">0 (Che ×0${nFeat > 1 ? ` · ${chMaskedCnt}/${nFeat} kênh` : ''})</span>`
-            : `<span style="color:#16a34a;font-weight:800">1 (Giữ ×1${chMaskedCnt > 0 ? ` · che ${chMaskedCnt}/${nFeat} kênh khác` : ''})</span>`);
+            ? `<span style="color:#d97706;font-weight:800">0 — Che lỗi${nFeat > 1 ? ` (${chMaskedCnt}/${nFeat} kênh)` : ''}</span>`
+            : `<span style="color:#16a34a;font-weight:800">1 — Giữ lại${chMaskedCnt > 0 ? ` (che ${chMaskedCnt}/${nFeat} kênh khác)` : ''}</span>`);
 
         const mseRowHtml = isDecoderMaskEnabled
           ? `<div class="tt-row">
@@ -1601,7 +1596,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <span class="tt-val">${(recVal ?? 0).toFixed(4)}</span>
           </div>
           <div class="tt-row">
-            <span class="tt-label">Giá trị Mask (0 / 1)</span>
+            <span class="tt-label">Trạng thái Mask</span>
             <span class="tt-val">${maskValStr}</span>
           </div>
           ${mseRowHtml}
@@ -1695,18 +1690,18 @@ document.addEventListener('DOMContentLoaded', () => {
           ? Math.max(0, ((mseTargetUnmasked - mseTargetMasked) / mseTargetUnmasked) * 100).toFixed(1)
           : '0.0';
         if (maskNoteEl) {
-          maskNoteEl.innerHTML = `* <strong>Đang BẬT Mask (Mô phỏng Train — meta.py):</strong> nhân <code>X &odot; Mask</code> và <code>X&#770; &odot; Mask</code> khóa ${maskedCells.toLocaleString()} ô bất thường về 0 &rArr; MSE giảm từ <strong>${mseTargetUnmasked.toFixed(4)}</strong> xuống <strong>${mseTargetMasked.toFixed(4)}</strong> (&minus;${dropPct}%), giúp Decoder chỉ học sóng chuẩn!`;
+          maskNoteEl.innerHTML = `Khóa <strong>${maskedCells.toLocaleString()}</strong> phần tử vượt chuẩn về 0 để Decoder chỉ học quy luật sóng bình thường — MSE giảm từ <strong>${mseTargetUnmasked.toFixed(4)}</strong> xuống <strong>${mseTargetMasked.toFixed(4)}</strong> (-${dropPct}%).`;
         }
         if (expText3El) {
-          expText3El.textContent = `Đang BẬT Anomaly Mask {0, 1}: ${maskedCells.toLocaleString()}/${totalCells.toLocaleString()} ô vượt chuẩn bị gán Mask = 0 (màn sọc vàng trên đồ thị), khóa sai số vùng lỗi về 0 và hạ MSE từ ${mseTargetUnmasked.toFixed(4)} xuống ${mseTargetMasked.toFixed(4)} (cửa sổ chuẩn giữ nguyên Mask = 1 với MSE = ${activeNormalMse.toFixed(4)}).`;
+          expText3El.textContent = `Khi bật Anomaly Mask: ${maskedCells.toLocaleString()}/${totalCells.toLocaleString()} phần tử vượt chuẩn bị che về 0 (vùng sọc vàng), hạ MSE từ ${mseTargetUnmasked.toFixed(4)} xuống ${mseTargetMasked.toFixed(4)} (cửa sổ chuẩn giữ nguyên MSE = ${activeNormalMse.toFixed(4)}).`;
         }
       } else {
         const ratio = mseNormalUnmasked > 1e-7 ? (mseTargetUnmasked / mseNormalUnmasked) : 1.0;
         if (maskNoteEl) {
           if (ratio >= 2.0) {
-            maskNoteEl.innerHTML = `* <strong>Đang TẮT Mask (Chế độ Test — Mask = 1 toàn bộ):</strong> mở đủ ${totalCells.toLocaleString()} ô làm lộ rõ độ lệch <strong>MSE = ${mseTargetUnmasked.toFixed(4)}</strong> (gấp <strong>${ratio.toFixed(0)}&times;</strong> chuẩn ${mseNormalUnmasked.toFixed(4)}). Nhấn nút <strong>🎭 Anomaly Mask</strong> phía trên để xem bên trong Mask {0, 1}!`;
+            maskNoteEl.innerHTML = `Mở toàn bộ <strong>${totalCells.toLocaleString()}</strong> phần tử làm lộ rõ độ lệch tại vùng sự cố: <strong>MSE = ${mseTargetUnmasked.toFixed(4)}</strong> (gấp <strong>${ratio.toFixed(0)} lần</strong> mức chuẩn ${mseNormalUnmasked.toFixed(4)}).`;
           } else {
-            maskNoteEl.innerHTML = `* <strong>Đang TẮT Mask (Chế độ Test — Mask = 1 toàn bộ):</strong> tính sai số trên đủ ${totalCells.toLocaleString()} ô — Khảo sát <strong>MSE = ${mseTargetUnmasked.toFixed(4)}</strong> đối chiếu Chuẩn <strong>MSE = ${mseNormalUnmasked.toFixed(4)}</strong>. Nhấn <strong>🎭 Anomaly Mask</strong> phía trên để bật thử!`;
+            maskNoteEl.innerHTML = `Mở toàn bộ <strong>${totalCells.toLocaleString()}</strong> phần tử — Cửa sổ khảo sát <strong>MSE = ${mseTargetUnmasked.toFixed(4)}</strong> đối chiếu Cửa sổ chuẩn <strong>MSE = ${mseNormalUnmasked.toFixed(4)}</strong>.`;
           }
         }
         if (expText3El) {
