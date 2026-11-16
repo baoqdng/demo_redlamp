@@ -1572,8 +1572,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const maskValStr = !isDecoderMaskEnabled
           ? '1 (Đang tắt Mask — mở 100%)'
           : (stepBit === 0
-            ? `<span style="color:#d97706;font-weight:800">0 — Che lỗi${nFeat > 1 ? ` (${chMaskedCnt}/${nFeat} kênh)` : ''}</span>`
-            : `<span style="color:#16a34a;font-weight:800">1 — Giữ lại${chMaskedCnt > 0 ? ` (che ${chMaskedCnt}/${nFeat} kênh khác)` : ''}</span>`);
+            ? `<span style="color:#d97706;font-weight:700">0 — Che lỗi${nFeat > 1 ? ` (${chMaskedCnt}/${nFeat} kênh)` : ''}</span>`
+            : `<span style="color:#16a34a;font-weight:700">1 — Giữ lại${chMaskedCnt > 0 ? ` (che ${chMaskedCnt}/${nFeat} kênh khác)` : ''}</span>`);
 
         const mseRowHtml = isDecoderMaskEnabled
           ? `<div class="tt-row">
@@ -1597,7 +1597,7 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
           <div class="tt-row">
             <span class="tt-label">Trạng thái Mask</span>
-            <span class="tt-val">${maskValStr}</span>
+            <span class="tt-val tt-val-text">${maskValStr}</span>
           </div>
           ${mseRowHtml}
           <div class="tt-row">
